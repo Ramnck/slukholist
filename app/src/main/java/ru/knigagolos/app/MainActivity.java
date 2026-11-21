@@ -33,7 +33,11 @@ public final class MainActivity extends Activity {
   private Credentials credentials;
   private Piper piper;
   private LinearLayout root;
-  private Button mic, play, back, forward;
+  private Button mic;
+  private ImageButton play, back, forward;
+  private LinearLayout playerPage, recentPage, recentItems;
+  private boolean showingRecent, trackUpSwipe;
+  private float originX, originY;
   private TextView author, title, hint;
   private final ServiceConnection connection =
       new ServiceConnection() {
@@ -46,6 +50,7 @@ public final class MainActivity extends Activity {
                   seenError = service.error;
                   status = service.error;
                 }
+                if (showingRecent) refreshRecent();
                 render();
               };
           if (service.active()) selected = service.current();
@@ -77,7 +82,10 @@ public final class MainActivity extends Activity {
         status = "Добавьте книгу через библиотеку";
       }
     }
-    if (state != null) selected = state.getString("selected", "");
+    if (state != null) {
+      selected = state.getString("selected", "");
+      showingRecent = state.getBoolean("recent");
+    }
     if (shelf.get(selected) == null && !shelf.all().isEmpty()) selected = shelf.all().get(0).id;
     piper =
         new Piper(
@@ -87,7 +95,7 @@ public final class MainActivity extends Activity {
               showStatus(message);
             });
     layout();
-    render();
+    showPage(showingRecent);
     bound = bindService(new Intent(this, BookPlayer.class), connection, BIND_AUTO_CREATE);
   }
 
@@ -124,43 +132,63 @@ public final class MainActivity extends Activity {
     mic =
         button(
             "Сказать",
-            0xffd6b2ff,
+            0xff6b34df,
             () -> {
               if (dialogMode) {
                 endDialog();
                 showStatus("");
               } else voice();
             });
-    row(root, mic, 1.15f);
+    mic.setTextColor(Color.WHITE);
+    mic.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+    row(root, mic, 0.16f);
+    playerPage = new LinearLayout(this);
+    playerPage.setOrientation(LinearLayout.VERTICAL);
+    row(root, playerPage, 0.84f);
     LinearLayout card = new GalleryCard(this);
     card.setGravity(Gravity.CENTER);
     card.setOrientation(LinearLayout.VERTICAL);
-    row(root, card, 2.5f);
+    row(playerPage, card, 0.29f);
     author = label(25);
     title = label(35);
     title.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
-    card.addView(author);
-    card.addView(title);
+    card.setPadding(0, dp(5), 0, dp(5));
+    card.addView(author, -1, -2);
+    row(card, title, 1);
     hint = label(17);
-    card.addView(hint);
+    card.addView(hint, -1, -2);
     card.setOnClickListener(
         v -> {
           Book b = shelf.get(selected);
           if (b != null && !dialogMode && !active()) piper.say(b.label(), null);
         });
-    play = button("Слушать", 0xffe9e9e9, this::toggle);
-    row(root, play, 1.15f);
+
     LinearLayout seek = new LinearLayout(this);
-    row(root, seek, 0.9f);
-    back = button("Назад 30 с", 0xfff2f2f2, () -> move(-30));
-    forward = button("Вперёд 30 с", 0xfff2f2f2, () -> move(30));
-    back.setTextSize(21);
-    forward.setTextSize(21);
+    row(playerPage, seek, 0.20f);
+    back = control(R.drawable.control_back, "Назад на 10 секунд", () -> move(-10));
+    forward = control(R.drawable.control_forward, "Вперёд на 10 секунд", () -> move(10));
     horizontal(seek, back);
     horizontal(seek, forward);
-    Button library = button("Библиотека", Color.WHITE, this::library);
-    library.setTextSize(19);
-    root.addView(library, new LinearLayout.LayoutParams(-1, dp(48)));
+    play = control(R.drawable.control_play, "Воспроизвести", this::toggle);
+    row(playerPage, play, 0.51f);
+
+    recentPage = new LinearLayout(this);
+    recentPage.setOrientation(LinearLayout.VERTICAL);
+    row(root, recentPage, 0.84f);
+    TextView heading = label(30);
+    heading.setText("Недавно слушали");
+    heading.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+    heading.setPadding(0, dp(14), 0, dp(10));
+    recentPage.addView(heading, -1, -2);
+    ScrollView scroll = new ScrollView(this);
+    recentItems = new LinearLayout(this);
+    recentItems.setOrientation(LinearLayout.VERTICAL);
+    scroll.addView(recentItems);
+    row(recentPage, scroll, 1);
+    LinearLayout nav = new LinearLayout(this);
+    recentPage.addView(nav, -1, dp(64));
+    horizontal(nav, button("К плееру", 0xffeeeeee, () -> showPage(false)));
+    horizontal(nav, button("Ещё", 0xffeeeeee, this::toolsMenu));
     scaleLabels(getResources().getConfiguration());
   }
 
@@ -172,12 +200,11 @@ public final class MainActivity extends Activity {
 
   private void scaleLabels(Configuration config) {
     boolean wide = config.screenWidthDp >= 600 && config.screenHeightDp >= 450;
-    title.setTextSize(wide ? 52 : 36);
-    author.setTextSize(wide ? 34 : 25);
+    title.setAutoSizeTextTypeUniformWithConfiguration(
+        wide ? 36 : 26, wide ? 90 : 60, 1, android.util.TypedValue.COMPLEX_UNIT_SP);
+    author.setTextSize(wide ? 38 : 29);
     mic.setTextSize(wide ? 40 : 30);
-    play.setTextSize(wide ? 42 : 30);
-    back.setTextSize(wide ? 30 : 21);
-    forward.setTextSize(wide ? 30 : 21);
+
     hint.setTextSize(wide ? 22 : 17);
   }
 
@@ -239,6 +266,92 @@ public final class MainActivity extends Activity {
     return b;
   }
 
+  private ImageButton control(int icon, String description, Runnable action) {
+    ImageButton b = new ImageButton(this);
+    b.setImageResource(icon);
+    b.setContentDescription(description);
+    b.setScaleType(ImageView.ScaleType.FIT_CENTER);
+    b.setBackground(
+        new android.graphics.drawable.RippleDrawable(
+            android.content.res.ColorStateList.valueOf(0x22000000),
+            null,
+            new android.graphics.drawable.ColorDrawable(Color.WHITE)));
+    b.setPadding(dp(8), dp(7), dp(8), dp(7));
+    b.setOnClickListener(v -> action.run());
+    return b;
+  }
+
+  @Override
+  public boolean dispatchTouchEvent(MotionEvent e) {
+    if (root != null && !showingRecent) {
+      if (e.getActionMasked() == MotionEvent.ACTION_DOWN) {
+        originX = e.getX();
+        originY = e.getY();
+        int[] xy = new int[2];
+        root.getLocationInWindow(xy);
+        float y = (originY - xy[1]) / Math.max(1, root.getHeight());
+        trackUpSwipe = y >= 0.2f && y <= 0.76f;
+      } else if (trackUpSwipe && e.getActionMasked() == MotionEvent.ACTION_MOVE) {
+        float rise = originY - e.getY();
+        if (rise >= dp(48) && rise > 1.3f * Math.abs(e.getX() - originX)) {
+          MotionEvent cancel = MotionEvent.obtain(e);
+          cancel.setAction(MotionEvent.ACTION_CANCEL);
+          super.dispatchTouchEvent(cancel);
+          cancel.recycle();
+          trackUpSwipe = false;
+          endDialog();
+          cancelSelection();
+          showPage(true);
+          return true;
+        }
+      }
+    }
+    return super.dispatchTouchEvent(e);
+  }
+
+  private void showPage(boolean recent) {
+    showingRecent = recent;
+    playerPage.setVisibility(recent ? View.GONE : View.VISIBLE);
+    recentPage.setVisibility(recent ? View.VISIBLE : View.GONE);
+    if (recent) refreshRecent();
+    render();
+  }
+
+  private void refreshRecent() {
+    recentItems.removeAllViews();
+    List<Book> history = shelf.recent();
+    if (history.isEmpty()) {
+      TextView empty = label(23);
+      empty.setText("Здесь появятся книги, которые вы слушали");
+      empty.setPadding(dp(12), dp(28), dp(12), dp(28));
+      recentItems.addView(empty);
+    }
+    for (Book b : history) {
+      Button item =
+          button(
+              b.author.isEmpty() ? b.title : b.title + "\n" + b.author,
+              0xfff3f3f3,
+              () -> {
+                if (active() && !service.current().equals(b.id)) service.pause();
+                selected = b.id;
+                status = "";
+                showPage(false);
+                if (!active()) piper.say(b.label(), null);
+              });
+      item.setGravity(Gravity.CENTER_VERTICAL | Gravity.START);
+      item.setTextSize(25);
+      item.setPadding(dp(16), dp(12), dp(16), dp(12));
+      item.setMinHeight(dp(76));
+      recentItems.addView(item, -1, -2);
+    }
+  }
+
+  @Override
+  public void onBackPressed() {
+    if (showingRecent) showPage(false);
+    else super.onBackPressed();
+  }
+
   private void row(LinearLayout group, View v, float weight) {
     group.addView(v, new LinearLayout.LayoutParams(-1, 0, weight));
   }
@@ -254,20 +367,17 @@ public final class MainActivity extends Activity {
   private void render() {
     Book b = offeredBook == null ? shelf.get(selected) : offeredBook;
     author.setText(b == null ? "" : b.author);
+    title.setMaxLines(b != null && b.title.length() <= 20 ? 1 : 2);
     title.setText(b == null ? "Выберите книгу" : b.title);
     boolean current = active() && service.current().equals(selected);
-    mic.setText(dialogMode ? "Завершить разговор" : "Сказать");
-    play.setText(
-        current
-            ? "Пауза"
-            : b != null && (shelf.position(b.id) > 0 || shelf.track(b.id) > 0)
-                ? "Продолжить"
-                : "Слушать");
+    mic.setContentDescription(dialogMode ? "Завершить разговор" : "Сказать");
+    play.setImageResource(current ? R.drawable.control_pause : R.drawable.control_play);
+    play.setContentDescription(current ? "Пауза" : "Воспроизвести");
     play.setEnabled(b != null && !pendingPlay);
     back.setEnabled(offeredBook == null);
     forward.setEnabled(offeredBook == null);
     String normal =
-        current && !service.isPlaying() ? "Открываю запись…" : "Листайте книги влево или вправо";
+        current && !service.isPlaying() ? "Открываю запись…" : "Свайп вверх — недавние книги";
     hint.setText(status.isEmpty() ? normal : status);
   }
 
@@ -346,12 +456,13 @@ public final class MainActivity extends Activity {
     render();
   }
 
-  private void library() {
+  private void toolsMenu() {
+    showPage(false);
     endDialog();
     cancelSelection();
     showStatus("");
     new AlertDialog.Builder(this)
-        .setTitle("Библиотека")
+        .setTitle("Ещё")
         .setItems(
             new String[] {
               "Найти аудиокнигу",
@@ -557,6 +668,7 @@ public final class MainActivity extends Activity {
   }
 
   private void voice() {
+    if (showingRecent) showPage(false);
     try {
       if (credentials.read().isEmpty()) {
         settings();
@@ -721,7 +833,7 @@ public final class MainActivity extends Activity {
         break;
       case "seek":
         selected = previous;
-        move(Math.max(-86400, Math.min(86400, r.optInt("seconds", -30))));
+        move(Math.max(-86400, Math.min(86400, r.optInt("seconds", -10))));
         resumePrevious();
         break;
       case "timer":
@@ -832,6 +944,7 @@ public final class MainActivity extends Activity {
   protected void onSaveInstanceState(Bundle b) {
     super.onSaveInstanceState(b);
     b.putString("selected", selected);
+    b.putBoolean("recent", showingRecent);
   }
 
   @Override

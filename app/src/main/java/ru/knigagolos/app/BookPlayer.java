@@ -70,12 +70,12 @@ public final class BookPlayer extends Service implements SensorEventListener {
 
           @Override
           public void onRewind() {
-            skip(-30);
+            skip(-10);
           }
 
           @Override
           public void onFastForward() {
-            skip(30);
+            skip(10);
           }
 
           @Override

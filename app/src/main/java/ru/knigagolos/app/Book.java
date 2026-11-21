@@ -50,6 +50,13 @@ final class Book {
 
     Shelf(Context c) {
       data = c.getSharedPreferences("books", Context.MODE_PRIVATE);
+      if (!data.contains("historyVersion")) {
+        SharedPreferences.Editor edit = data.edit();
+        for (Book book : all()) {
+          if (data.contains("t:" + book.id)) edit.putBoolean("played:" + book.id, true);
+        }
+        edit.putInt("historyVersion", 1).apply();
+      }
     }
 
     List<Book> all() {
@@ -62,6 +69,12 @@ final class Book {
       return result;
     }
 
+    List<Book> recent() {
+      List<Book> result = all();
+      result.removeIf(b -> !data.getBoolean("played:" + b.id, false));
+      return result;
+    }
+
     Book get(String id) {
       for (Book b : all()) if (b.id.equals(id)) return b;
       return null;
@@ -69,16 +82,19 @@ final class Book {
 
     void put(Book book, boolean played) {
       List<Book> books = all();
-      books.removeIf(b -> b.id.equals(book.id));
-      if (played) books.add(0, book);
-      else books.add(book);
+      int index = 0;
+      while (index < books.size() && !books.get(index).id.equals(book.id)) index++;
+      if (index < books.size()) books.remove(index);
+      books.add(played ? 0 : index, book);
       JSONArray a = new JSONArray();
       try {
         for (Book b : books) a.put(b.json());
       } catch (JSONException e) {
         throw new IllegalStateException(e);
       }
-      data.edit().putString("shelf", a.toString()).apply();
+      SharedPreferences.Editor edit = data.edit().putString("shelf", a.toString());
+      if (played) edit.putBoolean("played:" + book.id, true);
+      edit.apply();
     }
 
     void mark(String id, int track, int ms) {

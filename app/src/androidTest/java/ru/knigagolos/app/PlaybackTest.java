@@ -6,7 +6,6 @@ import android.content.Context;
 import android.net.Uri;
 import android.os.SystemClock;
 import android.view.View;
-import android.widget.Button;
 import androidx.test.core.app.ActivityScenario;
 import androidx.test.ext.junit.runners.AndroidJUnit4;
 import androidx.test.platform.app.InstrumentationRegistry;
@@ -58,13 +57,14 @@ public class PlaybackTest {
         true);
     shelf.data.edit().putBoolean("seeded", true).commit();
     try (ActivityScenario<MainActivity> screen = ActivityScenario.launch(MainActivity.class)) {
-      press(screen, "Слушать");
+      press(screen, "Воспроизвести");
       waitPosition(shelf, id, 300);
-      press(screen, "Вперёд 30 с");
-      waitPosition(shelf, id, 30000);
+      press(screen, "Вперёд на 10 секунд");
+      waitPosition(shelf, id, 10000);
+      assertTrue("One tap must seek ten seconds", shelf.position(id) < 20000);
       press(screen, "Пауза");
       int paused = shelf.position(id);
-      press(screen, "Продолжить");
+      press(screen, "Воспроизвести");
       waitPosition(shelf, id, paused + 300);
       press(screen, "Пауза");
       assertTrue(shelf.position(id) > paused);
@@ -74,6 +74,7 @@ public class PlaybackTest {
           .edit()
           .putString("shelf", previous)
           .putBoolean("seeded", seeded)
+          .remove("played:" + id)
           .remove("t:" + id)
           .remove("p:" + id)
           .commit();
@@ -98,11 +99,9 @@ public class PlaybackTest {
           activity
               .getWindow()
               .getDecorView()
-              .findViewsWithText(matches, text, View.FIND_VIEWS_WITH_TEXT);
+              .findViewsWithText(matches, text, View.FIND_VIEWS_WITH_CONTENT_DESCRIPTION);
           for (View v : matches)
-            if (v instanceof Button
-                && text.contentEquals(((Button) v).getText())
-                && v.isEnabled()) {
+            if (text.contentEquals(v.getContentDescription()) && v.isEnabled()) {
               pressed.set(v.performClick());
               break;
             }
