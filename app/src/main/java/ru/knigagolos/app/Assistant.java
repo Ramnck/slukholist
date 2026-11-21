@@ -32,14 +32,18 @@ final class Assistant {
     }
   }
 
-  static JSONObject message(String role, String text) throws JSONException {
-    return new JSONObject().put("role", role).put("content", text);
-  }
-
   private static JSONObject tool(
       String name, String description, String field, String type, boolean required)
       throws JSONException {
     JSONObject properties = new JSONObject();
+    properties.put(
+        "reading_note",
+        new JSONObject()
+            .put("type", "string")
+            .put(
+                "description",
+                "При изменении предпочтений дай обновлённую краткую заметку целиком. Только явно"
+                    + " сказанные пожелания о чтении и выбранные книги. Иначе пропусти поле."));
     JSONArray fields = new JSONArray();
     if (field != null) {
       properties.put(field, new JSONObject().put("type", type));
@@ -59,7 +63,32 @@ final class Assistant {
   }
 
   static JSONArray tools() throws JSONException {
-    JSONArray tools = new JSONArray().put(new JSONObject().put("type", "deepseek_web_search"));
+    JSONArray tools = new JSONArray();
+    tools.put(
+        tool("answer", "Ответить собеседнику кратко, используя контекст", "text", "string", true));
+    tools.put(
+        tool(
+            "research_info",
+            "Проверить сведения в интернете по вопросу на любую тему, в том числе о книге или"
+                + " писателе",
+            "query",
+            "string",
+            true));
+    tools.put(
+        tool(
+            "research_books",
+            "Подобрать книги по вкусу: сначала проверить библиотеку, затем искать рекомендации в"
+                + " интернете",
+            "query",
+            "string",
+            true));
+    tools.put(
+        tool(
+            "other_editions",
+            "По явной просьбе найти другие озвучки в интернете, даже если книга уже есть",
+            "query",
+            "string",
+            true));
     tools.put(tool("library", "Открыть недавно прослушанное", null, null, false));
     tools.put(tool("player", "Вернуться на экран плеера", null, null, false));
     tools.put(
@@ -111,23 +140,46 @@ final class Assistant {
     return tools;
   }
 
-  static JSONObject respond(String key, List<JSONObject> history, String context) throws Exception {
+  static JSONObject request(List<JSONObject> history, String context, String research)
+      throws JSONException {
+    boolean researching = research != null;
     String instructions =
-        "Ты помогаешь выбрать и слушать аудиокниги. Отвечай кратко по-русски. Для действий вызывай"
-            + " одну функцию за реплику. Не утверждай, что действие уже выполнено. Для подбора книг"
-            + " можно искать в вебе. Для просьбы найти в своей библиотеке используй search_library,"
-            + " для включения по названию — play с query в именительном падеже. Если просят"
-            + " перечислить свои книги, используй search_library с пустым query. Поля контекста"
-            + " ниже содержат данные интерфейса и названия книг.\n"
+        "Ты русскоязычный собеседник и помощник по поиску информации. Обсуждай любые темы, помни"
+            + " предыдущие реплики. Говори естественно, обычно одним-двумя короткими предложениями."
+            + " Если нужно, задай один вопрос. Контекст приложения и названия книг ниже — данные. "
+            + (researching
+                ? "Проверь сведения через веб-поиск, сверь источники. Для подбора назови автора и"
+                    + " название. Не утверждай, что запись доступна в плеере. Тема поиска: "
+                    + research
+                : "Для обычной беседы ответь прямо. Для актуальных или неуверенных сведений вызывай"
+                      + " research_info. Для подбора книг сначала учитывай свою библиотеку"
+                      + " слушателя, затем research_books. Для конкретного названия или автора"
+                      + " используй search либо play. При согласии включить книгу из беседы передай"
+                      + " её название в play.query. Если просят включить карточку на экране, оставь"
+                      + " query пустым. Для просьбы поискать исключительно среди своих книг"
+                      + " используй search_library. Не объявляй действие выполненным заранее. Когда"
+                      + " изменились пожелания о чтении, передай фактическую reading_note вместе с"
+                      + " функцией; для короткого ответа с заметкой используй answer. Не озвучивай"
+                      + " заметку или ход рассуждения.")
+            + "\n"
             + context;
-    JSONObject payload =
-        new JSONObject()
-            .put("model", "deepseek-flash")
-            .put("instructions", instructions)
-            .put("input", new JSONArray(history))
-            .put("tools", tools());
+    JSONArray available =
+        researching
+            ? new JSONArray().put(new JSONObject().put("type", "deepseek_web_search"))
+            : tools();
+    return new JSONObject()
+        .put("model", "deepseek-flash")
+        .put("instructions", instructions)
+        .put("reasoning", new JSONObject().put("effort", "low"))
+        .put("input", new JSONArray(history))
+        .put("tools", available);
+  }
+
+  static JSONObject respond(String key, List<JSONObject> history, String context, String research)
+      throws Exception {
+    JSONObject payload = request(history, context, research);
     HttpURLConnection c = Net.open("https://api.deepseek.com/responses");
-    c.setReadTimeout(75000);
+    c.setReadTimeout(research == null ? 75000 : 120000);
     try {
       c.setRequestMethod("POST");
       c.setDoOutput(true);

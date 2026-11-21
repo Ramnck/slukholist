@@ -20,6 +20,31 @@ import org.junit.runner.RunWith;
 @RunWith(AndroidJUnit4.class)
 public class VoiceTest {
   @Test
+  public void lastTenMessagesAndReadingPreferencesSurviveRelaunch() throws Exception {
+    var prefs =
+        InstrumentationRegistry.getInstrumentation()
+            .getContext()
+            .getSharedPreferences("test-dialog", 0);
+    prefs.edit().clear().commit();
+    Conversation conversation = new Conversation(prefs);
+    for (int i = 0; i < 14; i++)
+      conversation.add(i % 2 == 0 ? "user" : "assistant", Integer.toString(i));
+    conversation.updateNote("Любит исторические романы.");
+    Conversation reopened = new Conversation(prefs);
+    assertEquals("Любит исторические романы.", reopened.note());
+    JSONObject route = Assistant.request(reopened.history(), "", null);
+    JSONArray input = route.getJSONArray("input");
+    assertEquals(10, input.length());
+    assertEquals("4", input.getJSONObject(0).getString("content"));
+    assertEquals("13", input.getJSONObject(9).getString("content"));
+    assertEquals("low", route.getJSONObject("reasoning").getString("effort"));
+    assertFalse(route.getJSONArray("tools").toString().contains("deepseek_web_search"));
+    JSONObject web = Assistant.request(reopened.history(), "", "История радио");
+    assertEquals(
+        "deepseek_web_search", web.getJSONArray("tools").getJSONObject(0).getString("type"));
+  }
+
+  @Test
   public void distinguishesAccountConnectivityAndServiceErrors() {
     assertEquals(
         "На счёте DeepSeek недостаточно денег.",
@@ -54,7 +79,7 @@ public class VoiceTest {
     shelf.data.edit().putBoolean("seeded", true).commit();
     try (ActivityScenario<MainActivity> screen = ActivityScenario.launch(MainActivity.class)) {
       screen.onActivity(a -> a.interpret("Открой библиотеку"));
-      command(screen, "search_library", new JSONObject().put("query", "мария зеленая"));
+      command(screen, "search", new JSONObject().put("query", "мария зеленая"));
       assertTrue(
           "The matching book must be offered before starting", awaitText(screen, "Включить?"));
       assertFalse(shelf.recent().stream().anyMatch(b -> b.id.equals(book.id)));

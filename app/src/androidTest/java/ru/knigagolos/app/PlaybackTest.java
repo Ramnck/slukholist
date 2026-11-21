@@ -63,8 +63,14 @@ public class PlaybackTest {
       press(screen, "Вперёд на 10 секунд");
       waitPosition(shelf, id, 10000);
       assertTrue("One tap must seek ten seconds", shelf.position(id) < 20000);
-      press(screen, "Пауза");
+      int beforeRecreation = shelf.position(id);
+      screen.recreate();
+      waitPosition(shelf, id, beforeRecreation + 300);
+      screen.moveToState(androidx.lifecycle.Lifecycle.State.CREATED);
       int paused = shelf.position(id);
+      SystemClock.sleep(2500);
+      assertEquals("Leaving the app must pause at its bookmark", paused, shelf.position(id));
+      screen.moveToState(androidx.lifecycle.Lifecycle.State.RESUMED);
       press(screen, "Воспроизвести");
       waitPosition(shelf, id, paused + 300);
       press(screen, "Пауза");
@@ -103,15 +109,15 @@ public class PlaybackTest {
     shelf.mark(older.id, 0, 45000);
     shelf.data.edit().putBoolean("seeded", true).commit();
     try (ActivityScenario<MainActivity> screen = ActivityScenario.launch(MainActivity.class)) {
-      swipe(screen, 0.45f, 0.73f); // Player to library.
-      swipe(screen, 0.56f, 0.22f); // Older book.
+      swipe(screen, 0.56f, 0.22f); // Player directly to second (older) book.
       swipe(screen, 0.25f, 0.59f); // Newer book.
       swipe(screen, 0.56f, 0.22f);
       assertEquals(newest.id, shelf.recent().get(0).id);
       press(screen, "Играть выбранную книгу");
       waitPosition(shelf, older.id, 45500);
       assertEquals(older.id, shelf.recent().get(0).id);
-      swipe(screen, 0.45f, 0.73f);
+      swipe(screen, 0.56f, 0.22f); // Second card in the new order.
+      swipe(screen, 0.25f, 0.59f); // Back to the book just played.
       int paused = shelf.position(older.id);
       press(screen, "Играть выбранную книгу");
       waitPosition(shelf, older.id, paused + 300);

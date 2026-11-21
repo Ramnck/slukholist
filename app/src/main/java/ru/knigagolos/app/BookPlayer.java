@@ -16,6 +16,8 @@ public final class BookPlayer extends Service implements SensorEventListener {
     }
   }
 
+  // Activity and service lifecycle callbacks run on the same main thread.
+  static int visibleActivities;
   private final Local binder = new Local();
   private final Handler handler = new Handler(Looper.getMainLooper());
   private Book.Shelf shelf;
@@ -25,7 +27,6 @@ public final class BookPlayer extends Service implements SensorEventListener {
   private SensorManager sensors;
   private MediaSession session;
   private Book book;
-  private Piper errorVoice;
   private int track;
   private boolean ready, faceDown, seeking;
   private long sleepUntil;
@@ -88,6 +89,7 @@ public final class BookPlayer extends Service implements SensorEventListener {
   }
 
   static void start(Context c, String id) {
+    if (visibleActivities == 0) return;
     c.startForegroundService(new Intent(c, BookPlayer.class).setAction("play").putExtra("id", id));
   }
 
@@ -99,9 +101,12 @@ public final class BookPlayer extends Service implements SensorEventListener {
     }
     if ("pause".equals(intent.getAction())) pause();
     if ("play".equals(intent.getAction())) {
-      if (errorVoice != null) errorVoice.stop();
       Book next = shelf.get(intent.getStringExtra("id"));
       startForeground(NOTIFICATION, notification());
+      if (visibleActivities == 0) {
+        pause();
+        return START_NOT_STICKY;
+      }
       if (next == null || next.tracks.isEmpty()) {
         fail("Книга недоступна");
         return START_NOT_STICKY;
@@ -310,16 +315,7 @@ public final class BookPlayer extends Service implements SensorEventListener {
 
   private void fail(String message) {
     error = message;
-    if (changed != null) {
-      pause();
-    } else {
-      // A book can fail with the screen off after the activity has been destroyed.
-      releasePlayer();
-      audio.abandonAudioFocusRequest(focus);
-      notifyUi();
-      if (errorVoice == null) errorVoice = new Piper(this, ignored -> pause());
-      errorVoice.say(message, this::pause);
-    }
+    pause();
   }
 
   private void notifyUi() {
@@ -365,6 +361,12 @@ public final class BookPlayer extends Service implements SensorEventListener {
   }
 
   @Override
+  public void onTaskRemoved(Intent intent) {
+    pause();
+    super.onTaskRemoved(intent);
+  }
+
+  @Override
   public IBinder onBind(Intent i) {
     return binder;
   }
@@ -372,7 +374,6 @@ public final class BookPlayer extends Service implements SensorEventListener {
   @Override
   public void onDestroy() {
     changed = null;
-    if (errorVoice != null) errorVoice.close();
     persist();
     releasePlayer();
     handler.removeCallbacksAndMessages(null);

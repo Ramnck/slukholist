@@ -21,7 +21,7 @@ import org.json.*;
 public final class MainActivity extends Activity {
   private final ExecutorService jobs = Executors.newCachedThreadPool();
   private final Handler main = new Handler(Looper.getMainLooper());
-  private final List<JSONObject> conversation = new ArrayList<>();
+  private Conversation conversation;
   private List<Book> offers = Collections.emptyList();
   private int offerIndex;
   private Book offeredBook;
@@ -42,7 +42,7 @@ public final class MainActivity extends Activity {
   private ImageButton libraryPlay;
   private String restoredLibraryId = "";
   private BookCarousel carousel;
-  private boolean showingRecent, trackDownSwipe, openingGesture;
+  private boolean showingRecent, trackUpSwipe, openingGesture;
   private final Runnable announcePage =
       () -> {
         Book b = libraryBook();
@@ -65,7 +65,8 @@ public final class MainActivity extends Activity {
                 render();
               };
           if (service.active()) selected = service.current();
-          render();
+          if (!service.error.isEmpty()) service.changed.run();
+          else render();
         }
 
         public void onServiceDisconnected(ComponentName n) {
@@ -79,6 +80,7 @@ public final class MainActivity extends Activity {
     super.onCreate(state);
     setVolumeControlStream(AudioManager.STREAM_MUSIC);
     shelf = new Book.Shelf(this);
+    conversation = new Conversation(getSharedPreferences("conversation", MODE_PRIVATE));
     credentials = new Credentials(this);
     if (!shelf.data.getBoolean("seeded", false)) {
       try (BufferedReader r =
@@ -294,26 +296,25 @@ public final class MainActivity extends Activity {
         int[] xy = new int[2];
         root.getLocationInWindow(xy);
         float y = (originY - xy[1]) / Math.max(1, root.getHeight());
-        trackDownSwipe = y >= 0.2f && y <= 0.76f;
-      } else if (trackDownSwipe && e.getActionMasked() == MotionEvent.ACTION_MOVE) {
-        float drop = e.getY() - originY;
-        if (drop >= dp(48) && drop > 1.3f * Math.abs(e.getX() - originX)) {
+        trackUpSwipe = y >= 0.18f && y <= 1f;
+      } else if (trackUpSwipe && e.getActionMasked() == MotionEvent.ACTION_MOVE) {
+        float rise = originY - e.getY();
+        if (rise >= dp(48) && rise > 1.3f * Math.abs(e.getX() - originX)) {
           MotionEvent cancel = MotionEvent.obtain(e);
           cancel.setAction(MotionEvent.ACTION_CANCEL);
           super.dispatchTouchEvent(cancel);
           cancel.recycle();
-          trackDownSwipe = false;
+          trackUpSwipe = false;
           openingGesture = true;
-          if (dialogMode) {
-            turn++;
-            openRecent();
-          } else {
-            endDialog();
-            cancelSelection();
-            if (active()) service.pause();
-            status = "";
-            showPage(true);
-          }
+          boolean talking = dialogMode;
+          turn++;
+          clearOffers();
+          piper.stop();
+          if (active()) service.pause();
+          status = "";
+          showPage(true);
+          libraryPager.setCurrentItem(Math.min(1, Math.max(0, carousel.getItemCount() - 1)), false);
+          if (talking) reply(currentLabel());
           return true;
         }
       }
@@ -392,7 +393,7 @@ public final class MainActivity extends Activity {
     back.setEnabled(offeredBook == null);
     forward.setEnabled(offeredBook == null);
     String normal =
-        current && !service.isPlaying() ? "Открываю запись…" : "Свайп вниз — библиотека";
+        current && !service.isPlaying() ? "Открываю запись…" : "Свайп вверх — следующая книга";
     hint.setText(status.isEmpty() ? normal : status);
   }
 
@@ -427,6 +428,7 @@ public final class MainActivity extends Activity {
 
   private void startBook(Book b) {
     if (showingRecent) showPage(false);
+    if (dialogMode) conversation.add("assistant", "Выбрана книга «" + b.label() + "».");
     cancelSelection();
     endDialog();
     selected = b.id;
@@ -461,7 +463,6 @@ public final class MainActivity extends Activity {
     piper.stop();
     offers = Collections.emptyList();
     offeredBook = null;
-    conversation.clear();
     render();
   }
 
@@ -540,14 +541,29 @@ public final class MainActivity extends Activity {
       reportError("Введите автора или название");
       return;
     }
+    if (spoken) stage("Ищу", () -> searchCatalogs(query, true));
+    else searchCatalogs(query, false);
+  }
+
+  private void searchCatalogs(String query, boolean spoken) {
+    searchCatalogs(query, spoken, false);
+  }
+
+  private void searchCatalogs(String query, boolean spoken, boolean otherEditions) {
     int task = ++selectionTask, ticket = turn;
     showStatus("Ищу «" + query + "»…");
     List<Book> found = shelf.search(query);
-    if (Failures.offline(this)) {
-      if (found.isEmpty()) reportError(Failures.OFFLINE);
-      else presentSearch(found, spoken, Failures.OFFLINE + " ");
+    if (!found.isEmpty() && !otherEditions) {
+      presentSearch(found, spoken, "");
       return;
     }
+    if (Failures.offline(this)) {
+      reportError(Failures.OFFLINE);
+      return;
+    }
+    Set<String> localIds = new HashSet<>();
+    for (Book b : found) localIds.add(b.id);
+    found.clear();
     String[] catalogError = {""};
     int[] left = {2}, failed = {0};
     for (int i = 0; i < 2; i++) {
@@ -567,7 +583,8 @@ public final class MainActivity extends Activity {
                 () -> {
                   if (destroyed || task != selectionTask || (spoken && ticket != turn)) return;
                   for (Book b : batch)
-                    if (found.stream().noneMatch(old -> old.id.equals(b.id))) found.add(b);
+                    if (!localIds.contains(b.id)
+                        && found.stream().noneMatch(old -> old.id.equals(b.id))) found.add(b);
                   if (!problem.isEmpty()) {
                     failed[0]++;
                     catalogError[0] = problem;
@@ -719,7 +736,6 @@ public final class MainActivity extends Activity {
     if (active()) service.pause();
     dialogMode = true;
     turn++;
-    conversation.clear();
     offers = Collections.emptyList();
     listen();
   }
@@ -733,9 +749,24 @@ public final class MainActivity extends Activity {
     }
   }
 
-  private void listen() {
+  private void stage(String text, Runnable next) {
     int ticket = turn;
-    showStatus("Слушаю…");
+    showStatus(text);
+    if (dialogMode)
+      piper.say(
+          text,
+          () -> {
+            if (ticket == turn && dialogMode) next.run();
+          });
+    else next.run();
+  }
+
+  private void listen() {
+    stage("Слушаю", this::recordUtterance);
+  }
+
+  private void recordUtterance() {
+    int ticket = turn;
     Vibrator v = getSystemService(Vibrator.class);
     if (v != null) v.vibrate(VibrationEffect.createOneShot(65, VibrationEffect.DEFAULT_AMPLITUDE));
     jobs.execute(
@@ -750,21 +781,19 @@ public final class MainActivity extends Activity {
                 });
             return;
           }
+          main.post(
+              () -> {
+                if (ticket != turn) return;
+                if (wav == null) reportError("Я вас не услышал. Нажмите «Сказать» и повторите.");
+                else stage("Принято", () -> transcribe(ticket, wav));
+              });
+        });
+  }
+
+  private void transcribe(int ticket, byte[] wav) {
+    jobs.execute(
+        () -> {
           try {
-            if (ticket != turn) return;
-            if (wav == null) {
-              main.post(
-                  () -> {
-                    if (ticket == turn) {
-                      reportError("Я вас не услышал. Нажмите «Сказать» и повторите.");
-                    }
-                  });
-              return;
-            }
-            main.post(
-                () -> {
-                  if (ticket == turn) showStatus("Распознаю…");
-                });
             String text = Assistant.transcribe(credentials.read(), wav);
             main.post(
                 () -> {
@@ -786,21 +815,12 @@ public final class MainActivity extends Activity {
         });
   }
 
-  private void remember(String role, String text) {
-    try {
-      conversation.add(Assistant.message(role, text));
-      while (conversation.size() > 16) conversation.remove(0);
-    } catch (JSONException impossible) {
-      throw new IllegalStateException(impossible);
-    }
-  }
-
   void interpret(String text) {
     if (text.isEmpty()) {
       reply("Не расслышал. Повторите?");
       return;
     }
-    remember("user", text);
+    conversation.add("user", text);
     String normalized = text.toLowerCase(Locale.ROOT).replaceAll("[^а-яё0-9 ]", "").trim();
     if (normalized.matches("открой библиотеку|моя библиотека|недавно прослушанное")) {
       openRecent();
@@ -815,8 +835,8 @@ public final class MainActivity extends Activity {
       showStatus("");
       return;
     }
-    if (normalized.matches("включи|включи эту|включи эту книгу|играй")
-        || (!offers.isEmpty() && normalized.matches("да|да включи|давай"))) {
+    if (offeredBook != null
+        && normalized.matches("включи|включи эту|включи эту книгу|играй|да|да включи|давай")) {
       playSelection();
       return;
     }
@@ -824,20 +844,32 @@ public final class MainActivity extends Activity {
       resumePrevious();
       return;
     }
+    stage("Думаю", () -> askAssistant(null));
+  }
+
+  private void askAssistant(String research) {
     int ticket = turn;
-    List<JSONObject> messages = new ArrayList<>(conversation);
+    List<JSONObject> messages = conversation.history();
     Book b = voiceBook();
+    List<String> titles = new ArrayList<>();
+    for (Book book : shelf.all()) {
+      if (titles.size() >= 60) break;
+      titles.add(book.label());
+    }
     String context =
         "Экран: "
             + (showingRecent ? "библиотека" : "плеер")
             + ". Выбрано: "
             + (b == null ? "" : b.label())
-            + (offers.isEmpty() ? "" : "; предложено: " + offers.get(offerIndex).label());
-    showStatus("Думаю…");
+            + (offers.isEmpty() ? "" : ". Предложено: " + offers.get(offerIndex).label())
+            + "\nПожелания: "
+            + conversation.note()
+            + "\nКниги слушателя (первые 60): "
+            + new JSONArray(titles);
     jobs.execute(
         () -> {
           try {
-            JSONObject result = Assistant.respond(credentials.read(), messages, context);
+            JSONObject result = Assistant.respond(credentials.read(), messages, context, research);
             main.post(
                 () -> {
                   if (ticket == turn) act(result);
@@ -856,7 +888,23 @@ public final class MainActivity extends Activity {
 
   void act(JSONObject r) {
     String query = r.optString("query").trim();
+    if (r.has("reading_note")) conversation.updateNote(r.optString("reading_note").trim());
     switch (r.optString("action")) {
+      case "research_books":
+      case "research_info":
+        if (query.isEmpty()) {
+          reply("О чём поискать?");
+          break;
+        }
+        stage(
+            "Ищу",
+            () -> {
+              List<Book> local = shelf.search(query);
+              if (r.optString("action").equals("research_books") && !local.isEmpty())
+                presentSearch(local, true, "");
+              else askAssistant(query);
+            });
+        break;
       case "library":
         openRecent();
         break;
@@ -868,7 +916,7 @@ public final class MainActivity extends Activity {
         reply(visible == null ? "Плеер открыт." : "Плеер. " + currentLabel());
         break;
       case "search_library":
-        localBooks(query, false);
+        stage("Ищу", () -> localBooks(query, false));
         break;
       case "choose":
         navigate(r.optInt("number", 0) - 1);
@@ -895,6 +943,10 @@ public final class MainActivity extends Activity {
         endDialog();
         importFiles();
         break;
+      case "other_editions":
+        if (query.isEmpty()) reply("Какую книгу поищем?");
+        else stage("Ищу", () -> searchCatalogs(query, true, true));
+        break;
       case "search":
         if (query.isEmpty()) reply("Какого автора поищем?");
         else search(query, true);
@@ -909,7 +961,7 @@ public final class MainActivity extends Activity {
         navigate((offers.isEmpty() ? libraryPager.getCurrentItem() : offerIndex) + step);
         break;
       case "play":
-        if (!query.isEmpty()) localBooks(query, true);
+        if (!query.isEmpty()) stage("Ищу", () -> localBooks(query, true));
         else playSelection();
         break;
       case "resume":
@@ -942,6 +994,7 @@ public final class MainActivity extends Activity {
         endDialog();
         showStatus("");
         break;
+      case "answer":
       case "chat":
         reply(r.optString("text", "Какую книгу хотите послушать?"));
         break;
@@ -951,6 +1004,7 @@ public final class MainActivity extends Activity {
   }
 
   private void spokenPause() {
+    if (dialogMode) conversation.add("assistant", "Пауза.");
     if (active()) service.pause();
     endDialog();
     showStatus("Пауза");
@@ -1006,7 +1060,7 @@ public final class MainActivity extends Activity {
     clearOffers();
     List<Book> matches = query.isEmpty() ? shelf.all() : shelf.search(query);
     if (matches.isEmpty()) {
-      if (play && !query.isEmpty()) search(query, true);
+      if (play && !query.isEmpty()) searchCatalogs(query, true);
       else reply("В вашей библиотеке ничего не нашлось. Поищем в каталогах?");
     } else if (play && matches.size() == 1) {
       startBook(matches.get(0));
@@ -1019,7 +1073,7 @@ public final class MainActivity extends Activity {
 
   private void reply(String s) {
     int ticket = turn;
-    remember("assistant", s);
+    conversation.add("assistant", s);
     showStatus(s);
     piper.say(
         s,
@@ -1119,9 +1173,22 @@ public final class MainActivity extends Activity {
   }
 
   @Override
+  protected void onStart() {
+    super.onStart();
+    BookPlayer.visibleActivities++;
+  }
+
+  @Override
   protected void onStop() {
+    BookPlayer.visibleActivities--;
+    if (BookPlayer.visibleActivities == 0 && !isChangingConfigurations()) {
+      if (service != null) service.pause();
+      stopService(new Intent(this, BookPlayer.class));
+    }
+    pendingPlay = false;
+    cancelSelection();
     main.removeCallbacks(announcePage);
-    if (showingRecent) piper.stop();
+    piper.stop();
     if (dialogMode) {
       endDialog();
       showStatus("");
