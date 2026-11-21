@@ -1,4 +1,4 @@
-Книга вслух — сторонние компоненты
+Слухолист — сторонние компоненты
 
 sherpa-onnx v1.12.20, Apache License 2.0
 https://github.com/k2-fsa/sherpa-onnx/tree/v1.12.20

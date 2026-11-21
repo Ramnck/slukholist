@@ -18,5 +18,5 @@ jobs:
       - run: ./gradlew assembleDebug lintDebug assembleDebugAndroidTest
       - uses: actions/upload-artifact@v4
         with:
-          name: kniga-vslukh-debug
+          name: slukholist-debug
           path: app/build/outputs/apk/debug/*.apk

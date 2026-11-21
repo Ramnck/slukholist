@@ -10,7 +10,7 @@ final class Net {
     HttpURLConnection c = (HttpURLConnection) new URL(url).openConnection();
     c.setConnectTimeout(12000);
     c.setReadTimeout(35000);
-    c.setRequestProperty("User-Agent", "KnigaVslukh/0.1 (Android audiobook player)");
+    c.setRequestProperty("User-Agent", "Slukholist/0.3 (Android audiobook player)");
     return c;
   }
 

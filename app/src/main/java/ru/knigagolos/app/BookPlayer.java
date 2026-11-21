@@ -55,7 +55,7 @@ public final class BookPlayer extends Service implements SensorEventListener {
     getSystemService(NotificationManager.class)
         .createNotificationChannel(
             new NotificationChannel(CHANNEL, "Чтение", NotificationManager.IMPORTANCE_LOW));
-    session = new MediaSession(this, "Книга вслух");
+    session = new MediaSession(this, "Слухолист");
     session.setCallback(
         new MediaSession.Callback() {
           @Override
@@ -171,7 +171,7 @@ public final class BookPlayer extends Service implements SensorEventListener {
             this,
             Uri.parse(location),
             java.util.Collections.singletonMap(
-                "User-Agent", "KnigaVslukh/0.1 (Android audiobook player)"));
+                "User-Agent", "Slukholist/0.3 (Android audiobook player)"));
         handler.postDelayed(loadingTimeout, 45000);
       } else if (location.startsWith("asset:///")) {
         try (android.content.res.AssetFileDescriptor file =
@@ -326,7 +326,7 @@ public final class BookPlayer extends Service implements SensorEventListener {
             PendingIntent.FLAG_IMMUTABLE);
     return new Notification.Builder(this, CHANNEL)
         .setSmallIcon(android.R.drawable.ic_media_play)
-        .setContentTitle(book == null ? "Книга вслух" : book.title)
+        .setContentTitle(book == null ? "Слухолист" : book.title)
         .setContentIntent(open)
         .addAction(new Notification.Action.Builder(null, "Пауза", stop).build())
         .setStyle(
