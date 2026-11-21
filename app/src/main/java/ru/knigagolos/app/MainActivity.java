@@ -12,6 +12,7 @@ import android.os.*;
 import android.provider.OpenableColumns;
 import android.view.*;
 import android.widget.*;
+import androidx.viewpager2.widget.ViewPager2;
 import java.io.*;
 import java.util.*;
 import java.util.concurrent.*;
@@ -35,8 +36,19 @@ public final class MainActivity extends Activity {
   private LinearLayout root;
   private Button mic;
   private ImageButton play, back, forward;
-  private LinearLayout playerPage, recentPage, recentItems;
-  private boolean showingRecent, trackUpSwipe;
+  private LinearLayout playerPage, recentPage;
+  private ViewPager2 libraryPager;
+  private TextView libraryPosition;
+  private ImageButton libraryPlay;
+  private String restoredLibraryId = "";
+  private BookCarousel carousel;
+  private boolean showingRecent, trackDownSwipe, openingGesture;
+  private final Runnable announcePage =
+      () -> {
+        Book b = libraryBook();
+        if (showingRecent && b != null && !destroyed) piper.say(b.label(), null);
+      };
+
   private float originX, originY;
   private TextView author, title, hint;
   private final ServiceConnection connection =
@@ -50,7 +62,6 @@ public final class MainActivity extends Activity {
                   seenError = service.error;
                   status = service.error;
                 }
-                if (showingRecent) refreshRecent();
                 render();
               };
           if (service.active()) selected = service.current();
@@ -85,6 +96,7 @@ public final class MainActivity extends Activity {
     if (state != null) {
       selected = state.getString("selected", "");
       showingRecent = state.getBoolean("recent");
+      restoredLibraryId = state.getString("libraryBook", "");
     }
     if (shelf.get(selected) == null && !shelf.all().isEmpty()) selected = shelf.all().get(0).id;
     piper =
@@ -145,7 +157,7 @@ public final class MainActivity extends Activity {
     playerPage = new LinearLayout(this);
     playerPage.setOrientation(LinearLayout.VERTICAL);
     row(root, playerPage, 0.84f);
-    LinearLayout card = new GalleryCard(this);
+    LinearLayout card = new LinearLayout(this);
     card.setGravity(Gravity.CENTER);
     card.setOrientation(LinearLayout.VERTICAL);
     row(playerPage, card, 0.29f);
@@ -175,20 +187,43 @@ public final class MainActivity extends Activity {
     recentPage = new LinearLayout(this);
     recentPage.setOrientation(LinearLayout.VERTICAL);
     row(root, recentPage, 0.84f);
-    TextView heading = label(30);
-    heading.setText("Недавно слушали");
-    heading.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
-    heading.setPadding(0, dp(14), 0, dp(10));
-    recentPage.addView(heading, -1, -2);
-    ScrollView scroll = new ScrollView(this);
-    recentItems = new LinearLayout(this);
-    recentItems.setOrientation(LinearLayout.VERTICAL);
-    scroll.addView(recentItems);
-    row(recentPage, scroll, 1);
+    libraryPosition = label(18);
+    recentPage.addView(libraryPosition, -1, -2);
+    libraryPager = new ViewPager2(this);
+    libraryPager.setOrientation(ViewPager2.ORIENTATION_VERTICAL);
+    row(recentPage, libraryPager, 0.68f);
+    libraryPager.registerOnPageChangeCallback(
+        new ViewPager2.OnPageChangeCallback() {
+          @Override
+          public void onPageSelected(int index) {
+            updateLibraryPosition();
+          }
+
+          @Override
+          public void onPageScrollStateChanged(int state) {
+            main.removeCallbacks(announcePage);
+            if (state == ViewPager2.SCROLL_STATE_IDLE && showingRecent)
+              main.postDelayed(announcePage, 130);
+            else if (state == ViewPager2.SCROLL_STATE_DRAGGING) piper.stop();
+          }
+        });
+    libraryPlay =
+        control(
+            R.drawable.control_play,
+            "Играть выбранную книгу",
+            () -> {
+              Book b = libraryBook();
+              if (b != null) startBook(b);
+            });
+    row(recentPage, libraryPlay, 0.32f);
     LinearLayout nav = new LinearLayout(this);
-    recentPage.addView(nav, -1, dp(64));
-    horizontal(nav, button("К плееру", 0xffeeeeee, () -> showPage(false)));
-    horizontal(nav, button("Ещё", 0xffeeeeee, this::toolsMenu));
+    recentPage.addView(nav, -1, dp(48));
+    Button books = button("Книги", Color.WHITE, this::toolsMenu);
+    Button preferences = button("Настройки", Color.WHITE, this::settings);
+    books.setTextSize(17);
+    preferences.setTextSize(17);
+    horizontal(nav, books);
+    horizontal(nav, preferences);
     scaleLabels(getResources().getConfiguration());
   }
 
@@ -206,40 +241,6 @@ public final class MainActivity extends Activity {
     mic.setTextSize(wide ? 40 : 30);
 
     hint.setTextSize(wide ? 22 : 17);
-  }
-
-  private final class GalleryCard extends LinearLayout {
-    private float startX, startY;
-
-    GalleryCard(Context context) {
-      super(context);
-    }
-
-    @Override
-    public boolean onTouchEvent(MotionEvent e) {
-      switch (e.getActionMasked()) {
-        case MotionEvent.ACTION_DOWN:
-          startX = e.getX();
-          startY = e.getY();
-          return true;
-        case MotionEvent.ACTION_UP:
-          float dx = e.getX() - startX, dy = e.getY() - startY;
-          if (Math.abs(dx) >= dp(28) && Math.abs(dx) > Math.abs(dy)) {
-            browse(dx < 0 ? 1 : -1);
-          } else if (Math.abs(dx) < dp(14) && Math.abs(dy) < dp(14)) {
-            performClick();
-          }
-          return true;
-        default:
-          return true;
-      }
-    }
-
-    @Override
-    public boolean performClick() {
-      super.performClick();
-      return true;
-    }
   }
 
   private TextView label(int size) {
@@ -283,6 +284,8 @@ public final class MainActivity extends Activity {
 
   @Override
   public boolean dispatchTouchEvent(MotionEvent e) {
+    if (e.getActionMasked() == MotionEvent.ACTION_DOWN) openingGesture = false;
+    if (openingGesture) return true;
     if (root != null && !showingRecent) {
       if (e.getActionMasked() == MotionEvent.ACTION_DOWN) {
         originX = e.getX();
@@ -290,17 +293,19 @@ public final class MainActivity extends Activity {
         int[] xy = new int[2];
         root.getLocationInWindow(xy);
         float y = (originY - xy[1]) / Math.max(1, root.getHeight());
-        trackUpSwipe = y >= 0.2f && y <= 0.76f;
-      } else if (trackUpSwipe && e.getActionMasked() == MotionEvent.ACTION_MOVE) {
-        float rise = originY - e.getY();
-        if (rise >= dp(48) && rise > 1.3f * Math.abs(e.getX() - originX)) {
+        trackDownSwipe = y >= 0.2f && y <= 0.76f;
+      } else if (trackDownSwipe && e.getActionMasked() == MotionEvent.ACTION_MOVE) {
+        float drop = e.getY() - originY;
+        if (drop >= dp(48) && drop > 1.3f * Math.abs(e.getX() - originX)) {
           MotionEvent cancel = MotionEvent.obtain(e);
           cancel.setAction(MotionEvent.ACTION_CANCEL);
           super.dispatchTouchEvent(cancel);
           cancel.recycle();
-          trackUpSwipe = false;
+          trackDownSwipe = false;
+          openingGesture = true;
           endDialog();
           cancelSelection();
+          if (active()) service.pause();
           showPage(true);
           return true;
         }
@@ -313,37 +318,33 @@ public final class MainActivity extends Activity {
     showingRecent = recent;
     playerPage.setVisibility(recent ? View.GONE : View.VISIBLE);
     recentPage.setVisibility(recent ? View.VISIBLE : View.GONE);
-    if (recent) refreshRecent();
+    main.removeCallbacks(announcePage);
+    if (recent) {
+      List<Book> books = shelf.recent();
+      // On a fresh install both starter recordings are available to try.
+      if (books.isEmpty()) books = shelf.all();
+      carousel = new BookCarousel(books, announcePage);
+      libraryPager.setAdapter(carousel);
+      libraryPager.setCurrentItem(carousel.indexOf(restoredLibraryId), false);
+      restoredLibraryId = "";
+      updateLibraryPosition();
+      main.postDelayed(announcePage, 150);
+    } else piper.stop();
     render();
   }
 
-  private void refreshRecent() {
-    recentItems.removeAllViews();
-    List<Book> history = shelf.recent();
-    if (history.isEmpty()) {
-      TextView empty = label(23);
-      empty.setText("Здесь появятся книги, которые вы слушали");
-      empty.setPadding(dp(12), dp(28), dp(12), dp(28));
-      recentItems.addView(empty);
-    }
-    for (Book b : history) {
-      Button item =
-          button(
-              b.author.isEmpty() ? b.title : b.title + "\n" + b.author,
-              0xfff3f3f3,
-              () -> {
-                if (active() && !service.current().equals(b.id)) service.pause();
-                selected = b.id;
-                status = "";
-                showPage(false);
-                if (!active()) piper.say(b.label(), null);
-              });
-      item.setGravity(Gravity.CENTER_VERTICAL | Gravity.START);
-      item.setTextSize(25);
-      item.setPadding(dp(16), dp(12), dp(16), dp(12));
-      item.setMinHeight(dp(76));
-      recentItems.addView(item, -1, -2);
-    }
+  private Book libraryBook() {
+    return carousel == null ? null : carousel.at(libraryPager.getCurrentItem());
+  }
+
+  private void updateLibraryPosition() {
+    if (carousel == null) return;
+    int count = carousel.getItemCount();
+    libraryPosition.setText(
+        count == 0
+            ? "Библиотека пуста"
+            : "Библиотека  ·  " + (libraryPager.getCurrentItem() + 1) + " из " + count);
+    libraryPlay.setEnabled(count > 0);
   }
 
   @Override
@@ -377,29 +378,14 @@ public final class MainActivity extends Activity {
     back.setEnabled(offeredBook == null);
     forward.setEnabled(offeredBook == null);
     String normal =
-        current && !service.isPlaying() ? "Открываю запись…" : "Свайп вверх — недавние книги";
+        current && !service.isPlaying() ? "Открываю запись…" : "Свайп вниз — библиотека";
     hint.setText(status.isEmpty() ? normal : status);
   }
 
   private void showStatus(String s) {
     status = s;
+    if (showingRecent && !s.isEmpty()) Toast.makeText(this, s, Toast.LENGTH_SHORT).show();
     render();
-  }
-
-  private void browse(int dir) {
-    List<Book> books = shelf.all();
-    if (books.isEmpty()) return;
-    int idx = 0;
-    for (int i = 0; i < books.size(); i++) if (books.get(i).id.equals(selected)) idx = i;
-    int next = Math.max(0, Math.min(books.size() - 1, idx + dir));
-    if (next == idx) return;
-    cancelSelection();
-    endDialog();
-    if (active()) service.pause();
-    Book b = books.get(next);
-    selected = b.id;
-    showStatus("");
-    piper.say(b.label(), null);
   }
 
   private void toggle() {
@@ -418,6 +404,7 @@ public final class MainActivity extends Activity {
   }
 
   private void startBook(Book b) {
+    if (showingRecent) showPage(false);
     cancelSelection();
     endDialog();
     selected = b.id;
@@ -457,19 +444,15 @@ public final class MainActivity extends Activity {
   }
 
   private void toolsMenu() {
-    showPage(false);
+    main.removeCallbacks(announcePage);
     endDialog();
     cancelSelection();
     showStatus("");
     new AlertDialog.Builder(this)
-        .setTitle("Ещё")
+        .setTitle("Книги")
         .setItems(
             new String[] {
-              "Найти аудиокнигу",
-              "Книги на телефоне",
-              "Добавить MP3 или M4B",
-              "Голосовой помощник",
-              "Об этой записи"
+              "Найти аудиокнигу", "Книги на телефоне", "Добавить MP3 или M4B", "Об этой записи"
             },
             (d, i) -> {
               switch (i) {
@@ -482,9 +465,6 @@ public final class MainActivity extends Activity {
                 case 2:
                   importFiles();
                   break;
-                case 3:
-                  settings();
-                  break;
                 default:
                   info();
               }
@@ -493,7 +473,7 @@ public final class MainActivity extends Activity {
   }
 
   private void info() {
-    Book b = shelf.get(selected);
+    Book b = showingRecent ? libraryBook() : shelf.get(selected);
     if (b != null)
       new AlertDialog.Builder(this)
           .setTitle(b.title)
@@ -512,6 +492,7 @@ public final class MainActivity extends Activity {
               Book b = books.get(i);
               if (active()) service.pause();
               selected = b.id;
+              showPage(false);
               showStatus("");
               piper.say(b.label(), null);
             })
@@ -633,12 +614,14 @@ public final class MainActivity extends Activity {
   }
 
   private void settings() {
+    main.removeCallbacks(announcePage);
+    piper.stop();
     EditText key = new EditText(this);
     key.setSingleLine();
     key.setHint("API-ключ DeepSeek");
     key.setInputType(129);
     new AlertDialog.Builder(this)
-        .setTitle("Голосовой помощник")
+        .setTitle("Настройки DeepSeek")
         .setMessage("Реплики отправляются в DeepSeek. Голос Piper работает на телефоне.")
         .setView(key)
         .setPositiveButton(
@@ -668,7 +651,8 @@ public final class MainActivity extends Activity {
   }
 
   private void voice() {
-    if (showingRecent) showPage(false);
+    main.removeCallbacks(announcePage);
+    piper.stop();
     try {
       if (credentials.read().isEmpty()) {
         settings();
@@ -685,6 +669,11 @@ public final class MainActivity extends Activity {
     }
     cancelSelection();
     piper.stop();
+    if (showingRecent) {
+      Book b = libraryBook();
+      if (b != null) selected = b.id;
+      showPage(false);
+    }
     previous = active() ? service.current() : selected;
     if (active()) service.pause();
     dialogMode = true;
@@ -932,6 +921,7 @@ public final class MainActivity extends Activity {
                         tracks);
                 shelf.put(book, false);
                 selected = book.id;
+                showPage(false);
                 showStatus("Добавлено в библиотеку");
               })
           .show();
@@ -945,10 +935,13 @@ public final class MainActivity extends Activity {
     super.onSaveInstanceState(b);
     b.putString("selected", selected);
     b.putBoolean("recent", showingRecent);
+    if (showingRecent && libraryBook() != null) b.putString("libraryBook", libraryBook().id);
   }
 
   @Override
   protected void onStop() {
+    main.removeCallbacks(announcePage);
+    if (showingRecent) piper.stop();
     if (dialogMode) {
       endDialog();
       showStatus("");

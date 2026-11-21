@@ -5,6 +5,7 @@ import static org.junit.Assert.*;
 import android.content.Context;
 import android.net.Uri;
 import android.os.SystemClock;
+import android.view.MotionEvent;
 import android.view.View;
 import androidx.test.core.app.ActivityScenario;
 import androidx.test.ext.junit.runners.AndroidJUnit4;
@@ -82,6 +83,72 @@ public class PlaybackTest {
     }
   }
 
+  @Test
+  public void carouselPromotesOnlyThePlayedBookAndResumesItsBookmark() throws Exception {
+    Context app = InstrumentationRegistry.getInstrumentation().getTargetContext();
+    Book.Shelf shelf = new Book.Shelf(app);
+    String previous = shelf.data.getString("shelf", "[]");
+    boolean seeded = shelf.data.getBoolean("seeded", false);
+    Book older =
+        new Book(
+            "test:older",
+            "Старая запись",
+            "",
+            "",
+            "",
+            Collections.singletonList("asset:///chekhov.mp3"));
+    Book newest = new Book("test:newest", "Новая запись", "", "", "", older.tracks);
+    shelf.put(older, true);
+    shelf.put(newest, true);
+    shelf.mark(older.id, 0, 45000);
+    shelf.data.edit().putBoolean("seeded", true).commit();
+    try (ActivityScenario<MainActivity> screen = ActivityScenario.launch(MainActivity.class)) {
+      swipe(screen, 0.45f, 0.73f); // Player to library.
+      swipe(screen, 0.56f, 0.22f); // Older book.
+      swipe(screen, 0.25f, 0.59f); // Newer book.
+      swipe(screen, 0.56f, 0.22f);
+      assertEquals(newest.id, shelf.recent().get(0).id);
+      press(screen, "Играть выбранную книгу");
+      waitPosition(shelf, older.id, 45500);
+      assertEquals(older.id, shelf.recent().get(0).id);
+      swipe(screen, 0.45f, 0.73f);
+      int paused = shelf.position(older.id);
+      press(screen, "Играть выбранную книгу");
+      waitPosition(shelf, older.id, paused + 300);
+      press(screen, "Пауза");
+    } finally {
+      var edit = shelf.data.edit().putString("shelf", previous).putBoolean("seeded", seeded);
+      for (Book b : Arrays.asList(older, newest))
+        edit.remove("played:" + b.id).remove("t:" + b.id).remove("p:" + b.id);
+      edit.commit();
+    }
+  }
+
+  private static void swipe(ActivityScenario<MainActivity> screen, float start, float end) {
+    int[] size = new int[2];
+    screen.onActivity(
+        a -> {
+          View decor = a.getWindow().getDecorView();
+          size[0] = decor.getWidth();
+          size[1] = decor.getHeight();
+        });
+    long down = SystemClock.uptimeMillis();
+    for (int step = 0; step <= 16; step++) {
+      int action =
+          step == 0
+              ? MotionEvent.ACTION_DOWN
+              : step == 16 ? MotionEvent.ACTION_UP : MotionEvent.ACTION_MOVE;
+      float y = size[1] * (start + (end - start) * step / 16);
+      MotionEvent event =
+          MotionEvent.obtain(down, SystemClock.uptimeMillis(), action, size[0] / 2f, y, 0);
+      event.setSource(android.view.InputDevice.SOURCE_TOUCHSCREEN);
+      InstrumentationRegistry.getInstrumentation().sendPointerSync(event);
+      event.recycle();
+      if (step < 16) SystemClock.sleep(20);
+    }
+    SystemClock.sleep(450);
+  }
+
   private static void waitPosition(Book.Shelf shelf, String id, int minimum) {
     long until = SystemClock.elapsedRealtime() + 15000;
     while (SystemClock.elapsedRealtime() < until && shelf.position(id) < minimum)
@@ -101,7 +168,7 @@ public class PlaybackTest {
               .getDecorView()
               .findViewsWithText(matches, text, View.FIND_VIEWS_WITH_CONTENT_DESCRIPTION);
           for (View v : matches)
-            if (text.contentEquals(v.getContentDescription()) && v.isEnabled()) {
+            if (text.contentEquals(v.getContentDescription()) && v.isEnabled() && v.isShown()) {
               pressed.set(v.performClick());
               break;
             }
