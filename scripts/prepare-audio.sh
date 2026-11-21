@@ -5,7 +5,7 @@ cd "$(dirname "$0")/.."
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 fetch() {
-  curl --fail --location --retry 3 --output "$tmp/$1" "$2"
+  curl --fail --location --retry 3 --connect-timeout 15 --max-time 300 --output "$tmp/$1" "$2"
   echo "$3  $tmp/$1" | shasum -a 256 -c -
 }
 base=https://github.com/k2-fsa/sherpa-onnx/releases/download

@@ -173,6 +173,11 @@ public final class BookPlayer extends Service implements SensorEventListener {
             java.util.Collections.singletonMap(
                 "User-Agent", "KnigaVslukh/0.1 (Android audiobook player)"));
         handler.postDelayed(loadingTimeout, 45000);
+      } else if (location.startsWith("asset:///")) {
+        try (android.content.res.AssetFileDescriptor file =
+            getAssets().openFd(location.substring("asset:///".length()))) {
+          p.setDataSource(file.getFileDescriptor(), file.getStartOffset(), file.getLength());
+        }
       } else p.setDataSource(this, Uri.parse(location));
       p.prepareAsync();
       notifyUi();

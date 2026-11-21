@@ -22,3 +22,9 @@ https://github.com/JetBrains/kotlin/tree/v2.1.21
 
 Для записей каталогов авторство и лицензия приводятся на странице источника.
 Сведения о текущей записи доступны через меню «Библиотека → Об этой записи».
+
+В APK включена запись «Толстый и тонкий», Антон Чехов.
+Запись: Pogrebnoj-Alexandroff. MP3-версия Викисклада, без редактирования.
+https://commons.wikimedia.org/wiki/Special:Redirect/page/33928834
+Creative Commons Attribution 3.0 Unported
+https://creativecommons.org/licenses/by/3.0/

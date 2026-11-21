@@ -91,10 +91,10 @@ final class Catalog {
             .appendQueryParameter("gsrnamespace", "6")
             .appendQueryParameter("gsrsearch", terms + " incategory:\"Audiobooks in Russian\"")
             .appendQueryParameter("gsrlimit", "12")
-            .appendQueryParameter("prop", "imageinfo")
-            .appendQueryParameter("iiprop", "url|mime|extmetadata")
+            .appendQueryParameter("prop", "videoinfo")
+            .appendQueryParameter("viprop", "url|mime|extmetadata|derivatives")
             .appendQueryParameter(
-                "iiextmetadatafilter", "Artist|LicenseShortName|LicenseUrl|Attribution")
+                "viextmetadatafilter", "Artist|LicenseShortName|LicenseUrl|Attribution")
             .build();
     JSONObject response = Net.get(u.toString());
     if (response.has("error")) throw new IOException("Ошибка каталога");
@@ -105,7 +105,9 @@ final class Catalog {
     Iterator<String> keys = pages.keys();
     while (keys.hasNext()) {
       JSONObject page = pages.getJSONObject(keys.next());
-      JSONObject f = page.getJSONArray("imageinfo").getJSONObject(0);
+      JSONArray versions = page.optJSONArray("videoinfo");
+      if (versions == null || versions.length() == 0) continue;
+      JSONObject f = versions.getJSONObject(0);
       if (!f.optString("mime").startsWith("audio/")
           && !f.optString("mime").equals("application/ogg")) continue;
       String title =
@@ -130,9 +132,21 @@ final class Catalog {
               "",
               "Викисклад",
               credit,
-              Collections.singletonList(f.getString("url"))));
+              Collections.singletonList(audioUrl(f))));
     }
     return result;
+  }
+
+  private static String audioUrl(JSONObject info) throws JSONException {
+    JSONArray variants = info.optJSONArray("derivatives");
+    if (variants != null) {
+      for (int i = 0; i < variants.length(); i++) {
+        JSONObject variant = variants.getJSONObject(i);
+        if ("audio/mpeg".equals(variant.optString("type"))
+            && variant.optString("src").startsWith("https://")) return variant.getString("src");
+      }
+    }
+    return info.getString("url");
   }
 
   private static String field(JSONObject m, String key) {
