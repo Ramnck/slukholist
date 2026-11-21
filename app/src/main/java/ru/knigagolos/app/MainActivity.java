@@ -30,6 +30,8 @@ public final class MainActivity extends Activity {
   private String selected = "", previous = "", status = "", seenError = "";
   private boolean dialogMode, bound, destroyed, pendingPlay;
   private Book.Shelf shelf;
+  private List<Book> culture;
+  Microphone.Input voiceInput = Microphone::listen;
   private BookPlayer service;
   private Credentials credentials;
   private Piper piper;
@@ -78,6 +80,8 @@ public final class MainActivity extends Activity {
   @Override
   public void onCreate(Bundle state) {
     super.onCreate(state);
+    getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+    culture = Catalog.culture(this);
     setVolumeControlStream(AudioManager.STREAM_MUSIC);
     shelf = new Book.Shelf(this);
     conversation = new Conversation(getSharedPreferences("conversation", MODE_PRIVATE));
@@ -557,47 +561,39 @@ public final class MainActivity extends Activity {
       presentSearch(found, spoken, "");
       return;
     }
+    Set<String> localIds = new HashSet<>();
+    for (Book b : found) localIds.add(b.id);
+    found = Book.matching(culture, query);
+    found.removeIf(b -> localIds.contains(b.id));
+    if (!found.isEmpty()) {
+      presentSearch(found, spoken, "");
+      return;
+    }
     if (Failures.offline(this)) {
       reportError(Failures.OFFLINE);
       return;
     }
-    Set<String> localIds = new HashSet<>();
-    for (Book b : found) localIds.add(b.id);
-    found.clear();
-    String[] catalogError = {""};
-    int[] left = {2}, failed = {0};
-    for (int i = 0; i < 2; i++) {
-      final int source = i;
-      jobs.execute(
-          () -> {
-            List<Book> result = new ArrayList<>();
-            String error = "";
-            try {
-              result = source == 0 ? Catalog.librivox(query) : Catalog.commons(query);
-            } catch (Exception e) {
-              error = Failures.network(e, Failures.offline(this), "Каталог временно недоступен.");
-            }
-            List<Book> batch = result;
-            String problem = error;
-            main.post(
-                () -> {
-                  if (destroyed || task != selectionTask || (spoken && ticket != turn)) return;
-                  for (Book b : batch)
-                    if (!localIds.contains(b.id)
-                        && found.stream().noneMatch(old -> old.id.equals(b.id))) found.add(b);
-                  if (!problem.isEmpty()) {
-                    failed[0]++;
-                    catalogError[0] = problem;
-                  }
-                  if (--left[0] != 0) return;
-                  if (failed[0] == 2 && found.isEmpty()) {
-                    reportError(catalogError[0]);
-                    return;
-                  }
-                  presentSearch(found, spoken, failed[0] > 0 ? "Часть каталогов недоступна. " : "");
-                });
-          });
-    }
+    CatalogSearch search =
+        new CatalogSearch(
+            main,
+            localIds,
+            () -> !destroyed && task == selectionTask && (!spoken || ticket == turn),
+            result -> {
+              if (!result.books.isEmpty()
+                  || result.availability == CatalogSearch.Availability.COMPLETE) {
+                presentSearch(result.books, spoken, "");
+              } else {
+                String message =
+                    Failures.offline(this)
+                        ? Failures.OFFLINE
+                        : result.availability == CatalogSearch.Availability.UNAVAILABLE
+                            ? "Каталоги пока не отвечают. Попробуйте чуть позже."
+                            : "Часть каталогов недоступна. Повторите поиск чуть позже.";
+                if (spoken) reply(message);
+                else reportError(message);
+              }
+            });
+    search.start(jobs, Arrays.asList(() -> Catalog.librivox(query), () -> Catalog.commons(query)));
   }
 
   private void presentSearch(List<Book> found, boolean spoken, String warning) {
@@ -773,7 +769,7 @@ public final class MainActivity extends Activity {
         () -> {
           byte[] wav;
           try {
-            wav = Microphone.listen(this, () -> ticket == turn);
+            wav = voiceInput.listen(this, () -> ticket == turn);
           } catch (Exception e) {
             main.post(
                 () -> {
@@ -821,7 +817,7 @@ public final class MainActivity extends Activity {
       return;
     }
     conversation.add("user", text);
-    String normalized = text.toLowerCase(Locale.ROOT).replaceAll("[^а-яё0-9 ]", "").trim();
+    String normalized = text.toLowerCase(Locale.ROOT).replaceAll("[^а-яё0-9]+", " ").trim();
     if (normalized.matches("открой библиотеку|моя библиотека|недавно прослушанное")) {
       openRecent();
       return;
@@ -836,7 +832,8 @@ public final class MainActivity extends Activity {
       return;
     }
     if (offeredBook != null
-        && normalized.matches("включи|включи эту|включи эту книгу|играй|да|да включи|давай")) {
+        && normalized.matches(
+            "да|давай|(?:да )?(?:включи|включай|играй|начинай)(?: эту(?: книгу)?| её| книгу)?")) {
       playSelection();
       return;
     }
@@ -961,7 +958,10 @@ public final class MainActivity extends Activity {
         navigate((offers.isEmpty() ? libraryPager.getCurrentItem() : offerIndex) + step);
         break;
       case "play":
-        if (!query.isEmpty()) stage("Ищу", () -> localBooks(query, true));
+        if (offeredBook != null
+            && !Book.matching(Collections.singletonList(offeredBook), query).isEmpty())
+          playSelection();
+        else if (!query.isEmpty()) stage("Ищу", () -> localBooks(query, true));
         else playSelection();
         break;
       case "resume":

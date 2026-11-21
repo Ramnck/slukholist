@@ -4,6 +4,10 @@ sherpa-onnx v1.12.20, Apache License 2.0
 https://github.com/k2-fsa/sherpa-onnx/tree/v1.12.20
 https://github.com/k2-fsa/sherpa-onnx/blob/v1.12.20/LICENSE
 
+AndroidX Media3 ExoPlayer 1.5.1, Apache License 2.0
+https://github.com/androidx/media/tree/1.5.1
+https://www.apache.org/licenses/LICENSE-2.0
+
 ONNX Runtime, MIT License
 https://github.com/microsoft/onnxruntime
 https://github.com/microsoft/onnxruntime/blob/main/LICENSE

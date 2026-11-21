@@ -6,9 +6,19 @@ import android.hardware.*;
 import android.media.*;
 import android.media.session.MediaSession;
 import android.media.session.PlaybackState;
-import android.net.Uri;
 import android.os.*;
+import androidx.media3.common.C;
+import androidx.media3.common.MediaItem;
+import androidx.media3.common.PlaybackException;
+import androidx.media3.common.Player;
+import androidx.media3.database.StandaloneDatabaseProvider;
+import androidx.media3.datasource.*;
+import androidx.media3.datasource.cache.*;
+import androidx.media3.exoplayer.ExoPlayer;
+import androidx.media3.exoplayer.source.DefaultMediaSourceFactory;
+import java.io.File;
 
+@androidx.annotation.OptIn(markerClass = androidx.media3.common.util.UnstableApi.class)
 public final class BookPlayer extends Service implements SensorEventListener {
   final class Local extends Binder {
     BookPlayer service() {
@@ -21,14 +31,17 @@ public final class BookPlayer extends Service implements SensorEventListener {
   private final Local binder = new Local();
   private final Handler handler = new Handler(Looper.getMainLooper());
   private Book.Shelf shelf;
-  private MediaPlayer player;
+  private ExoPlayer player;
+  private StandaloneDatabaseProvider database;
+  private SimpleCache cache;
+  private DataSource.Factory sources;
   private AudioManager audio;
   private AudioFocusRequest focus;
   private SensorManager sensors;
   private MediaSession session;
   private Book book;
   private int track;
-  private boolean ready, faceDown, seeking;
+  private boolean ready, faceDown;
   private long sleepUntil;
   Runnable changed;
   String error = "";
@@ -126,73 +139,81 @@ public final class BookPlayer extends Service implements SensorEventListener {
 
   private void load(int position) {
     releasePlayer();
-    MediaPlayer p = new MediaPlayer();
-    player = p;
     try {
-      p.setAudioAttributes(SPEECH);
-      p.setWakeMode(this, PowerManager.PARTIAL_WAKE_LOCK);
-      p.setOnErrorListener(
-          (m, a, b) -> {
-            if (player == m) {
-              ready = false;
-              fail(mediaError());
+      if (sources == null) {
+        database = new StandaloneDatabaseProvider(this);
+        cache =
+            new SimpleCache(
+                new File(getCacheDir(), "chapters"),
+                new LeastRecentlyUsedCacheEvictor(128L * 1024 * 1024),
+                database);
+        CacheDataSource.Factory remote =
+            new CacheDataSource.Factory()
+                .setCache(cache)
+                .setFlags(CacheDataSource.FLAG_IGNORE_CACHE_ON_ERROR)
+                .setUpstreamDataSourceFactory(
+                    new DefaultHttpDataSource.Factory()
+                        .setUserAgent("Slukholist (Android audiobook player)")
+                        .setConnectTimeoutMs(12000)
+                        .setReadTimeoutMs(20000));
+        // Asset and content URIs go straight to the device. Only network bytes use the cache.
+        sources = new DefaultDataSource.Factory(this, remote);
+      }
+      ExoPlayer p =
+          new ExoPlayer.Builder(this)
+              .setMediaSourceFactory(new DefaultMediaSourceFactory(sources))
+              .build();
+      player = p;
+      p.setAudioAttributes(
+          new androidx.media3.common.AudioAttributes.Builder()
+              .setUsage(C.USAGE_MEDIA)
+              .setContentType(C.AUDIO_CONTENT_TYPE_SPEECH)
+              .build(),
+          false);
+      p.setWakeMode(C.WAKE_MODE_LOCAL);
+      p.addListener(
+          new Player.Listener() {
+            @Override
+            public void onPlaybackStateChanged(int state) {
+              if (player != p) return;
+              if (state == Player.STATE_READY) {
+                handler.removeCallbacks(loadingTimeout);
+                if (!ready) {
+                  ready = true;
+                  begin(p);
+                }
+              } else if (state == Player.STATE_BUFFERING) {
+                handler.removeCallbacks(loadingTimeout);
+                handler.postDelayed(loadingTimeout, 45000);
+              } else if (state == Player.STATE_ENDED) {
+                if (track + 1 < book.tracks.size()) {
+                  track++;
+                  shelf.mark(book.id, track, 0);
+                  load(0);
+                } else {
+                  pause();
+                  shelf.mark(book.id, 0, 0);
+                  track = 0;
+                  notifyUi();
+                }
+              }
             }
-            return true;
-          });
-      p.setOnCompletionListener(
-          m -> {
-            if (player != m) return;
-            if (track + 1 < book.tracks.size()) {
-              track++;
-              shelf.mark(book.id, track, 0);
-              load(0);
-            } else {
-              pause();
-              shelf.mark(book.id, 0, 0);
-              track = 0;
-              notifyUi();
+
+            @Override
+            public void onIsPlayingChanged(boolean playing) {
+              if (player == p) notifyUi();
+            }
+
+            @Override
+            public void onPlayerError(PlaybackException e) {
+              if (player == p) fail(mediaError());
             }
           });
-      p.setOnPreparedListener(
-          m -> {
-            if (player != m) return;
-            handler.removeCallbacks(loadingTimeout);
-            ready = true;
-            if (position > 0) {
-              seeking = true;
-              m.setOnSeekCompleteListener(
-                  mp -> {
-                    if (player == mp && seeking) {
-                      seeking = false;
-                      mp.setOnSeekCompleteListener(null);
-                      begin(mp);
-                    }
-                  });
-              m.seekTo(
-                  Math.min(position, Math.max(0, m.getDuration() - 1)), MediaPlayer.SEEK_CLOSEST);
-            } else begin(m);
-          });
-      String location = book.tracks.get(track);
-      if (location.startsWith("https://")) {
-        if (Failures.offline(this)) {
-          fail(Failures.OFFLINE);
-          return;
-        }
-        p.setDataSource(
-            this,
-            Uri.parse(location),
-            java.util.Collections.singletonMap(
-                "User-Agent", "Slukholist/0.3 (Android audiobook player)"));
-        handler.postDelayed(loadingTimeout, 45000);
-      } else if (location.startsWith("asset:///")) {
-        try (android.content.res.AssetFileDescriptor file =
-            getAssets().openFd(location.substring("asset:///".length()))) {
-          p.setDataSource(file.getFileDescriptor(), file.getStartOffset(), file.getLength());
-        }
-      } else p.setDataSource(this, Uri.parse(location));
-      p.prepareAsync();
+      p.setMediaItem(MediaItem.fromUri(book.tracks.get(track)), position);
+      p.prepare();
+      p.play();
       notifyUi();
-    } catch (Exception e) {
+    } catch (RuntimeException e) {
       fail(mediaError());
     }
   }
@@ -206,9 +227,8 @@ public final class BookPlayer extends Service implements SensorEventListener {
     return "Не удалось открыть аудиофайл. Выберите его заново.";
   }
 
-  private void begin(MediaPlayer p) {
+  private void begin(ExoPlayer p) {
     if (player != p) return;
-    p.start();
     shelf.put(book, true);
     session.setActive(true);
     Sensor sensor = sensors.getDefaultSensor(Sensor.TYPE_ACCELEROMETER);
@@ -235,13 +255,13 @@ public final class BookPlayer extends Service implements SensorEventListener {
   }
 
   private void persist() {
-    if (ready && !seeking && book != null && player != null)
-      shelf.mark(book.id, track, player.getCurrentPosition());
+    if (ready && book != null && player != null)
+      shelf.mark(book.id, track, (int) Math.min(Integer.MAX_VALUE, player.getCurrentPosition()));
   }
 
   private final Runnable loadingTimeout =
       () -> {
-        if (player != null && !ready)
+        if (player != null && player.getPlaybackState() == Player.STATE_BUFFERING)
           fail(
               Failures.offline(this)
                   ? Failures.OFFLINE
@@ -251,9 +271,8 @@ public final class BookPlayer extends Service implements SensorEventListener {
   private void releasePlayer() {
     handler.removeCallbacks(loadingTimeout);
     ready = false;
-    seeking = false;
     if (player != null) {
-      MediaPlayer p = player;
+      ExoPlayer p = player;
       player = null;
       p.release();
     }
@@ -277,8 +296,8 @@ public final class BookPlayer extends Service implements SensorEventListener {
   }
 
   private void seek(int ms) {
-    player.seekTo(
-        Math.max(0, Math.min(ms, Math.max(0, player.getDuration() - 1))), MediaPlayer.SEEK_CLOSEST);
+    long duration = player.getDuration();
+    player.seekTo(Math.max(0, duration == C.TIME_UNSET ? ms : Math.min(ms, duration - 1)));
   }
 
   void setTimer(int minutes) {
@@ -379,6 +398,8 @@ public final class BookPlayer extends Service implements SensorEventListener {
     handler.removeCallbacksAndMessages(null);
     audio.abandonAudioFocusRequest(focus);
     session.release();
+    if (cache != null) cache.release();
+    if (database != null) database.close();
     super.onDestroy();
   }
 }

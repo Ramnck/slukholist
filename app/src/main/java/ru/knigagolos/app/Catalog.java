@@ -1,13 +1,32 @@
 package ru.knigagolos.app;
 
+import android.content.Context;
 import android.net.Uri;
 import android.text.Html;
-import java.io.IOException;
+import java.io.*;
+import java.nio.charset.StandardCharsets;
 import java.util.*;
 import org.json.*;
 
 // Search the Russian LibriVox collection at its audio host, and licensed audio on Commons.
 final class Catalog {
+  static List<Book> culture(Context context) {
+    try (BufferedReader reader =
+        new BufferedReader(
+            new InputStreamReader(
+                context.getAssets().open("culture.json"), StandardCharsets.UTF_8))) {
+      StringBuilder data = new StringBuilder();
+      String line;
+      while ((line = reader.readLine()) != null) data.append(line);
+      JSONArray entries = new JSONArray(data.toString());
+      List<Book> books = new ArrayList<>();
+      for (int i = 0; i < entries.length(); i++) books.add(Book.parse(entries.getJSONObject(i)));
+      return books;
+    } catch (IOException | JSONException e) {
+      return Collections.emptyList();
+    }
+  }
+
   static List<Book> librivox(String text) throws Exception {
     StringBuilder query =
         new StringBuilder("collection:librivoxaudio AND (language:rus OR language:Russian)");
@@ -24,7 +43,7 @@ final class Catalog {
             .appendQueryParameter("rows", "12")
             .appendQueryParameter("output", "json")
             .build();
-    JSONArray a = Net.get(u.toString()).getJSONObject("response").getJSONArray("docs");
+    JSONArray a = Net.getCatalog(u.toString()).getJSONObject("response").getJSONArray("docs");
     List<Book> result = new ArrayList<>();
     for (int i = 0; i < a.length(); i++) {
       JSONObject j = a.getJSONObject(i);
@@ -47,13 +66,13 @@ final class Catalog {
   static Book resolve(Book book) throws Exception {
     if (!book.tracks.isEmpty()) return book;
     String id = Uri.encode(book.id.substring(3));
-    JSONObject meta = Net.get("https://archive.org/metadata/" + id);
+    JSONObject meta = Net.getCatalog("https://archive.org/metadata/" + id);
     JSONArray files = meta.getJSONArray("files");
     Map<String, JSONObject> parts = new LinkedHashMap<>();
     for (int i = 0; i < files.length(); i++) {
       JSONObject f = files.getJSONObject(i);
       String name = f.optString("name");
-      if (!name.toLowerCase(Locale.ROOT).endsWith(".mp3") || name.contains("/")) continue;
+      if (!name.toLowerCase(Locale.ROOT).endsWith(".mp3")) continue;
       String key = f.optString("original", name).replaceFirst("(?i)(_(64|128)kb)?\\.[^.]+$", "");
       String track = f.optString("track", "");
       if (!track.isEmpty()) key = track + "|" + f.optString("disc", "1");
@@ -67,7 +86,7 @@ final class Catalog {
             .thenComparing(j -> j.optString("name")));
     List<String> urls = new ArrayList<>();
     for (JSONObject f : sorted)
-      urls.add("https://archive.org/download/" + id + "/" + Uri.encode(f.getString("name")));
+      urls.add("https://archive.org/download/" + id + "/" + Uri.encode(f.getString("name"), "/"));
     if (urls.isEmpty()) throw new IOException("Нет доступной аудиозаписи");
     return new Book(book.id, book.title, book.author, book.source, book.credit, urls);
   }
@@ -96,7 +115,7 @@ final class Catalog {
             .appendQueryParameter(
                 "viextmetadatafilter", "Artist|LicenseShortName|LicenseUrl|Attribution")
             .build();
-    JSONObject response = Net.get(u.toString());
+    JSONObject response = Net.getCatalog(u.toString());
     if (response.has("error")) throw new IOException("Ошибка каталога");
     JSONObject q = response.optJSONObject("query");
     List<Book> result = new ArrayList<>();

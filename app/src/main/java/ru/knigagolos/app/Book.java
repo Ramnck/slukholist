@@ -45,6 +45,39 @@ final class Book {
         urls);
   }
 
+  private static final java.util.regex.Pattern ENDING =
+      java.util.regex.Pattern.compile(
+          "(?<=.{3})(иями|ами|ями|ого|его|ому|ему|ая|яя|ую|юю|ой|ый|ий|ом|ым|им|ам|ям|ах|ях|а|я|у|ю|ы|и|е|о)$");
+
+  static List<Book> matching(List<Book> books, String query) {
+    Set<String> terms = words(query);
+    List<Book> matches = new ArrayList<>();
+    if (!terms.isEmpty())
+      for (Book b : books) {
+        Set<String> title = words(b.title);
+        boolean wholeTitle =
+            !title.isEmpty()
+                && terms.containsAll(title)
+                && (title.size() >= 2 || !Collections.disjoint(terms, words(b.author)));
+        String label = b.label().toLowerCase(Locale.ROOT).replace('ё', 'е');
+        if (wholeTitle
+            || words(label).containsAll(terms)
+            || terms.stream().allMatch(label::contains)) matches.add(b);
+      }
+    return matches;
+  }
+
+  private static Set<String> words(String text) {
+    Set<String> result = new HashSet<>();
+    for (String w : text.toLowerCase(Locale.ROOT).replace('ё', 'е').split("[^\\p{L}\\p{N}]+")) {
+      if (w.isEmpty()) continue;
+      // Keep a stem of at least three letters, e.g. «Пиковую даму» and «Пиковая дама».
+      String stem = ENDING.matcher(w).replaceFirst("");
+      result.add(stem);
+    }
+    return result;
+  }
+
   static class Shelf {
     final SharedPreferences data;
 
@@ -76,21 +109,7 @@ final class Book {
     }
 
     List<Book> search(String query) {
-      List<Book> matches = new ArrayList<>();
-      String terms = searchable(query);
-      if (terms.isEmpty()) return matches;
-      for (Book b : all()) {
-        String label = searchable(b.label());
-        if (Arrays.stream(terms.split(" ")).allMatch(label::contains)) matches.add(b);
-      }
-      return matches;
-    }
-
-    private String searchable(String s) {
-      return s.toLowerCase(Locale.ROOT)
-          .replace('ё', 'е')
-          .replaceAll("[^\\p{L}\\p{N}]+", " ")
-          .trim();
+      return matching(all(), query);
     }
 
     Book get(String id) {

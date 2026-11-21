@@ -7,6 +7,10 @@ import java.nio.*;
 import java.util.function.BooleanSupplier;
 
 final class Microphone {
+  interface Input {
+    byte[] listen(android.content.Context context, BooleanSupplier active) throws Exception;
+  }
+
   static byte[] listen(android.content.Context context, BooleanSupplier active) throws Exception {
     if (context.checkSelfPermission(android.Manifest.permission.RECORD_AUDIO)
         != android.content.pm.PackageManager.PERMISSION_GRANTED)

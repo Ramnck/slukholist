@@ -10,7 +10,9 @@ final class Net {
     HttpURLConnection c = (HttpURLConnection) new URL(url).openConnection();
     c.setConnectTimeout(12000);
     c.setReadTimeout(35000);
-    c.setRequestProperty("User-Agent", "Slukholist/0.3 (Android audiobook player)");
+    c.setRequestProperty(
+        "User-Agent",
+        "Slukholist/0.6 (Android audiobook player; https://github.com/Ramnck/slukholist)");
     return c;
   }
 
@@ -33,7 +35,10 @@ final class Net {
     }
   }
 
-  static JSONObject get(String url) throws Exception {
-    return read(open(url));
+  static JSONObject getCatalog(String url) throws Exception {
+    HttpURLConnection connection = open(url);
+    connection.setConnectTimeout(4000);
+    connection.setReadTimeout(6500);
+    return read(connection);
   }
 }
