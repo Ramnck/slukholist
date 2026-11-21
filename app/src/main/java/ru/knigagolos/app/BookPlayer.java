@@ -25,6 +25,7 @@ public final class BookPlayer extends Service implements SensorEventListener {
   private SensorManager sensors;
   private MediaSession session;
   private Book book;
+  private Piper errorVoice;
   private int track;
   private boolean ready, faceDown, seeking;
   private long sleepUntil;
@@ -98,6 +99,7 @@ public final class BookPlayer extends Service implements SensorEventListener {
     }
     if ("pause".equals(intent.getAction())) pause();
     if ("play".equals(intent.getAction())) {
+      if (errorVoice != null) errorVoice.stop();
       Book next = shelf.get(intent.getStringExtra("id"));
       startForeground(NOTIFICATION, notification());
       if (next == null || next.tracks.isEmpty()) {
@@ -128,7 +130,7 @@ public final class BookPlayer extends Service implements SensorEventListener {
           (m, a, b) -> {
             if (player == m) {
               ready = false;
-              fail("Запись недоступна. Проверьте сеть или файл");
+              fail(mediaError());
             }
             return true;
           });
@@ -167,6 +169,10 @@ public final class BookPlayer extends Service implements SensorEventListener {
           });
       String location = book.tracks.get(track);
       if (location.startsWith("https://")) {
+        if (Failures.offline(this)) {
+          fail(Failures.OFFLINE);
+          return;
+        }
         p.setDataSource(
             this,
             Uri.parse(location),
@@ -182,8 +188,17 @@ public final class BookPlayer extends Service implements SensorEventListener {
       p.prepareAsync();
       notifyUi();
     } catch (Exception e) {
-      fail("Не удалось открыть аудиозапись");
+      fail(mediaError());
     }
+  }
+
+  private String mediaError() {
+    if (book.tracks.get(track).startsWith("https://")) {
+      return Failures.offline(this)
+          ? Failures.OFFLINE
+          : "Не удалось загрузить запись. Попробуйте позже.";
+    }
+    return "Не удалось открыть аудиофайл. Выберите его заново.";
   }
 
   private void begin(MediaPlayer p) {
@@ -221,7 +236,11 @@ public final class BookPlayer extends Service implements SensorEventListener {
 
   private final Runnable loadingTimeout =
       () -> {
-        if (player != null && !ready) fail("Источник долго не отвечает. Попробуйте другую запись.");
+        if (player != null && !ready)
+          fail(
+              Failures.offline(this)
+                  ? Failures.OFFLINE
+                  : "Источник долго не отвечает. Попробуйте другую запись.");
       };
 
   private void releasePlayer() {
@@ -258,7 +277,7 @@ public final class BookPlayer extends Service implements SensorEventListener {
   }
 
   void setTimer(int minutes) {
-    sleepUntil = SystemClock.elapsedRealtime() + minutes * 60000L;
+    sleepUntil = minutes == 0 ? 0 : SystemClock.elapsedRealtime() + minutes * 60000L;
   }
 
   private final Runnable checkpoint =
@@ -291,7 +310,16 @@ public final class BookPlayer extends Service implements SensorEventListener {
 
   private void fail(String message) {
     error = message;
-    pause();
+    if (changed != null) {
+      pause();
+    } else {
+      // A book can fail with the screen off after the activity has been destroyed.
+      releasePlayer();
+      audio.abandonAudioFocusRequest(focus);
+      notifyUi();
+      if (errorVoice == null) errorVoice = new Piper(this, ignored -> pause());
+      errorVoice.say(message, this::pause);
+    }
   }
 
   private void notifyUi() {
@@ -344,6 +372,7 @@ public final class BookPlayer extends Service implements SensorEventListener {
   @Override
   public void onDestroy() {
     changed = null;
+    if (errorVoice != null) errorVoice.close();
     persist();
     releasePlayer();
     handler.removeCallbacksAndMessages(null);

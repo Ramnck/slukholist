@@ -17,7 +17,7 @@ final class Net {
   static JSONObject read(HttpURLConnection c) throws Exception {
     try {
       int code = c.getResponseCode();
-      if (code < 200 || code >= 300) throw new IOException("HTTP " + code);
+      if (code < 200 || code >= 300) throw new Failures.Http(code, c.getURL().getHost());
       try (BufferedReader r =
           new BufferedReader(new InputStreamReader(c.getInputStream(), StandardCharsets.UTF_8))) {
         StringBuilder out = new StringBuilder();

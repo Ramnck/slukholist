@@ -75,6 +75,24 @@ final class Book {
       return result;
     }
 
+    List<Book> search(String query) {
+      List<Book> matches = new ArrayList<>();
+      String terms = searchable(query);
+      if (terms.isEmpty()) return matches;
+      for (Book b : all()) {
+        String label = searchable(b.label());
+        if (Arrays.stream(terms.split(" ")).allMatch(label::contains)) matches.add(b);
+      }
+      return matches;
+    }
+
+    private String searchable(String s) {
+      return s.toLowerCase(Locale.ROOT)
+          .replace('ё', 'е')
+          .replaceAll("[^\\p{L}\\p{N}]+", " ")
+          .trim();
+    }
+
     Book get(String id) {
       for (Book b : all()) if (b.id.equals(id)) return b;
       return null;

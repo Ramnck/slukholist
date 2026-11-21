@@ -46,7 +46,7 @@ public final class MainActivity extends Activity {
   private final Runnable announcePage =
       () -> {
         Book b = libraryBook();
-        if (showingRecent && b != null && !destroyed) piper.say(b.label(), null);
+        if (showingRecent && !dialogMode && b != null && !destroyed) piper.say(b.label(), null);
       };
 
   private float originX, originY;
@@ -60,7 +60,7 @@ public final class MainActivity extends Activity {
                 pendingPlay = false;
                 if (!service.error.isEmpty() && !service.error.equals(seenError)) {
                   seenError = service.error;
-                  status = service.error;
+                  reportError(service.error);
                 }
                 render();
               };
@@ -103,8 +103,9 @@ public final class MainActivity extends Activity {
         new Piper(
             this,
             message -> {
+              String lastStatus = status;
               endDialog();
-              showStatus(message);
+              showStatus(lastStatus.isEmpty() ? message : lastStatus + " " + message);
             });
     layout();
     showPage(showingRecent);
@@ -204,7 +205,7 @@ public final class MainActivity extends Activity {
             main.removeCallbacks(announcePage);
             if (state == ViewPager2.SCROLL_STATE_IDLE && showingRecent)
               main.postDelayed(announcePage, 130);
-            else if (state == ViewPager2.SCROLL_STATE_DRAGGING) piper.stop();
+            else if (state == ViewPager2.SCROLL_STATE_DRAGGING && !dialogMode) piper.stop();
           }
         });
     libraryPlay =
@@ -303,10 +304,16 @@ public final class MainActivity extends Activity {
           cancel.recycle();
           trackDownSwipe = false;
           openingGesture = true;
-          endDialog();
-          cancelSelection();
-          if (active()) service.pause();
-          showPage(true);
+          if (dialogMode) {
+            turn++;
+            openRecent();
+          } else {
+            endDialog();
+            cancelSelection();
+            if (active()) service.pause();
+            status = "";
+            showPage(true);
+          }
           return true;
         }
       }
@@ -341,16 +348,21 @@ public final class MainActivity extends Activity {
     if (carousel == null) return;
     int count = carousel.getItemCount();
     libraryPosition.setText(
-        count == 0
-            ? "Библиотека пуста"
-            : "Библиотека  ·  " + (libraryPager.getCurrentItem() + 1) + " из " + count);
+        !status.isEmpty()
+            ? status
+            : count == 0
+                ? "Библиотека пуста"
+                : "Библиотека  ·  " + (libraryPager.getCurrentItem() + 1) + " из " + count);
     libraryPlay.setEnabled(count > 0);
   }
 
   @Override
   public void onBackPressed() {
-    if (showingRecent) showPage(false);
-    else super.onBackPressed();
+    if (showingRecent) {
+      endDialog();
+      status = "";
+      showPage(false);
+    } else super.onBackPressed();
   }
 
   private void row(LinearLayout group, View v, float weight) {
@@ -371,6 +383,8 @@ public final class MainActivity extends Activity {
     title.setMaxLines(b != null && b.title.length() <= 20 ? 1 : 2);
     title.setText(b == null ? "Выберите книгу" : b.title);
     boolean current = active() && service.current().equals(selected);
+    if (showingRecent) updateLibraryPosition();
+    mic.setText(dialogMode ? "Завершить" : "Сказать");
     mic.setContentDescription(dialogMode ? "Завершить разговор" : "Сказать");
     play.setImageResource(current ? R.drawable.control_pause : R.drawable.control_play);
     play.setContentDescription(current ? "Пауза" : "Воспроизвести");
@@ -384,8 +398,16 @@ public final class MainActivity extends Activity {
 
   private void showStatus(String s) {
     status = s;
-    if (showingRecent && !s.isEmpty()) Toast.makeText(this, s, Toast.LENGTH_SHORT).show();
     render();
+  }
+
+  private void reportError(String message) {
+    main.removeCallbacks(announcePage);
+    cancelSelection();
+    if (active()) service.pause();
+    endDialog();
+    showStatus(message);
+    piper.say(message, null);
   }
 
   private void toggle() {
@@ -515,73 +537,80 @@ public final class MainActivity extends Activity {
     offeredBook = null;
     offers = Collections.emptyList();
     if (query.isEmpty()) {
-      showStatus("Введите автора или название");
+      reportError("Введите автора или название");
       return;
     }
     int task = ++selectionTask, ticket = turn;
     showStatus("Ищу «" + query + "»…");
-    List<Book> local = new ArrayList<>();
-    for (Book b : shelf.all())
-      if (b.label().toLowerCase(Locale.ROOT).contains(query.toLowerCase(Locale.ROOT))) local.add(b);
-    List<Book> found = new ArrayList<>(local);
+    List<Book> found = shelf.search(query);
+    if (Failures.offline(this)) {
+      if (found.isEmpty()) reportError(Failures.OFFLINE);
+      else presentSearch(found, spoken, Failures.OFFLINE + " ");
+      return;
+    }
+    String[] catalogError = {""};
     int[] left = {2}, failed = {0};
     for (int i = 0; i < 2; i++) {
       final int source = i;
       jobs.execute(
           () -> {
             List<Book> result = new ArrayList<>();
-            boolean error = false;
+            String error = "";
             try {
               result = source == 0 ? Catalog.librivox(query) : Catalog.commons(query);
             } catch (Exception e) {
-              error = true;
+              error = Failures.network(e, Failures.offline(this), "Каталог временно недоступен.");
             }
             List<Book> batch = result;
-            boolean problem = error;
+            String problem = error;
             main.post(
                 () -> {
                   if (destroyed || task != selectionTask || (spoken && ticket != turn)) return;
                   for (Book b : batch)
                     if (found.stream().noneMatch(old -> old.id.equals(b.id))) found.add(b);
-                  if (problem) failed[0]++;
+                  if (!problem.isEmpty()) {
+                    failed[0]++;
+                    catalogError[0] = problem;
+                  }
                   if (--left[0] != 0) return;
-                  String warning = failed[0] > 0 ? "Часть каталогов недоступна. " : "";
-                  if (found.isEmpty()) {
-                    String s =
-                        failed[0] == 2
-                            ? "Каталоги недоступны. Попробуйте позже."
-                            : warning + "Запись не найдена. Попробуем другое название?";
-                    if (spoken) reply(s);
-                    else showStatus(s);
+                  if (failed[0] == 2 && found.isEmpty()) {
+                    reportError(catalogError[0]);
                     return;
                   }
-                  if (spoken) {
-                    offers = found;
-                    offerIndex = 0;
-                    offer();
-                  } else {
-                    showStatus(warning);
-                    new AlertDialog.Builder(this)
-                        .setTitle("Выберите запись")
-                        .setItems(
-                            found.stream()
-                                .map(b -> b.label() + " · " + b.source)
-                                .toArray(String[]::new),
-                            (d, n) -> resolve(found.get(n), false))
-                        .setNegativeButton("Назад", null)
-                        .show();
-                  }
+                  presentSearch(found, spoken, failed[0] > 0 ? "Часть каталогов недоступна. " : "");
                 });
           });
     }
   }
 
-  private void offer() {
-    offeredBook = null;
-    resolve(offers.get(offerIndex), true);
+  private void presentSearch(List<Book> found, boolean spoken, String warning) {
+    if (found.isEmpty()) {
+      String message = warning + "Запись не найдена. Попробуем другое название?";
+      if (spoken) reply(message);
+      else reportError(message);
+    } else if (spoken) {
+      offers = found;
+      offerIndex = 0;
+      resolve(found.get(0), true, warning);
+    } else {
+      showStatus(warning);
+      if (!warning.isEmpty()) piper.say(warning, null);
+      new AlertDialog.Builder(this)
+          .setTitle("Выберите запись")
+          .setItems(
+              found.stream().map(b -> b.label() + " · " + b.source).toArray(String[]::new),
+              (d, n) -> resolve(found.get(n), false, ""))
+          .setNegativeButton("Назад", null)
+          .show();
+    }
   }
 
-  private void resolve(Book candidate, boolean spoken) {
+  private void offer() {
+    offeredBook = null;
+    resolve(offers.get(offerIndex), true, "");
+  }
+
+  private void resolve(Book candidate, boolean spoken, String warning) {
     int task = ++selectionTask, ticket = turn;
     showStatus("Проверяю запись…");
     jobs.execute(
@@ -592,22 +621,33 @@ public final class MainActivity extends Activity {
                 () -> {
                   if (destroyed || task != selectionTask || (spoken && ticket != turn)) return;
                   if (spoken) {
+                    showPage(false);
                     offeredBook = b;
                     offers.set(offerIndex, b);
-                    reply(b.label() + ". Включить?");
+                    reply(
+                        warning
+                            + (offerIndex + 1)
+                            + " из "
+                            + offers.size()
+                            + ". "
+                            + b.label()
+                            + ". Включить?");
                   } else startBook(b);
                 });
           } catch (Exception e) {
             main.post(
                 () -> {
                   if (destroyed || task != selectionTask || (spoken && ticket != turn)) return;
-                  if (spoken) {
+                  if (Failures.offline(this)) {
+                    reportError(Failures.OFFLINE);
+                  } else if (spoken) {
                     offers.remove(offerIndex);
                     if (!offers.isEmpty()) {
                       offerIndex %= offers.size();
                       offer();
                     } else reply("Запись недоступна. Поищем другую?");
-                  } else showStatus("Запись недоступна. Выберите другую.");
+                  } else
+                    reportError(Failures.network(e, false, "Запись недоступна. Выберите другую."));
                 });
           }
         });
@@ -615,7 +655,7 @@ public final class MainActivity extends Activity {
 
   private void settings() {
     main.removeCallbacks(announcePage);
-    piper.stop();
+    endDialog();
     EditText key = new EditText(this);
     key.setSingleLine();
     key.setHint("API-ключ DeepSeek");
@@ -633,7 +673,7 @@ public final class MainActivity extends Activity {
                 credentials.save(s);
                 showStatus("Ключ сохранён");
               } catch (Exception e) {
-                showStatus("Не удалось сохранить ключ");
+                reportError("Не удалось сохранить ключ");
               }
             })
         .setNeutralButton(
@@ -643,7 +683,7 @@ public final class MainActivity extends Activity {
                 credentials.save("");
                 showStatus("Ключ удалён");
               } catch (Exception e) {
-                showStatus("Ошибка хранилища");
+                reportError("Ошибка хранилища");
               }
             })
         .setNegativeButton("Закрыть", null)
@@ -656,10 +696,15 @@ public final class MainActivity extends Activity {
     try {
       if (credentials.read().isEmpty()) {
         settings();
+        reportError("Введите ключ DeepSeek в настройках.");
         return;
       }
     } catch (Exception e) {
-      showStatus("Обновите ключ DeepSeek");
+      reportError("Обновите ключ DeepSeek");
+      return;
+    }
+    if (Failures.offline(this)) {
+      reportError(Failures.OFFLINE);
       return;
     }
     if (checkSelfPermission(Manifest.permission.RECORD_AUDIO)
@@ -669,12 +714,8 @@ public final class MainActivity extends Activity {
     }
     cancelSelection();
     piper.stop();
-    if (showingRecent) {
-      Book b = libraryBook();
-      if (b != null) selected = b.id;
-      showPage(false);
-    }
-    previous = active() ? service.current() : selected;
+    List<Book> recent = shelf.recent();
+    previous = active() ? service.current() : recent.isEmpty() ? selected : recent.get(0).id;
     if (active()) service.pause();
     dialogMode = true;
     turn++;
@@ -688,7 +729,7 @@ public final class MainActivity extends Activity {
     super.onRequestPermissionsResult(code, perms, granted);
     if (code == 44 && granted.length > 0) {
       if (granted[0] == PackageManager.PERMISSION_GRANTED) voice();
-      else showStatus("Для разговора нужен микрофон");
+      else reportError("Для разговора нужен микрофон");
     }
   }
 
@@ -699,15 +740,23 @@ public final class MainActivity extends Activity {
     if (v != null) v.vibrate(VibrationEffect.createOneShot(65, VibrationEffect.DEFAULT_AMPLITUDE));
     jobs.execute(
         () -> {
+          byte[] wav;
           try {
-            byte[] wav = Microphone.listen(this, () -> ticket == turn);
+            wav = Microphone.listen(this, () -> ticket == turn);
+          } catch (Exception e) {
+            main.post(
+                () -> {
+                  if (ticket == turn) reportError(Failures.MICROPHONE);
+                });
+            return;
+          }
+          try {
             if (ticket != turn) return;
             if (wav == null) {
               main.post(
                   () -> {
                     if (ticket == turn) {
-                      endDialog();
-                      showStatus("Нажмите «Сказать», когда будете готовы");
+                      reportError("Я вас не услышал. Нажмите «Сказать» и повторите.");
                     }
                   });
               return;
@@ -731,16 +780,9 @@ public final class MainActivity extends Activity {
     main.post(
         () -> {
           if (ticket != turn || destroyed) return;
-          endDialog();
-          String error = e.getMessage() == null ? "" : e.getMessage();
-          String msg =
-              error.contains("401")
-                  ? "Проверьте ключ DeepSeek"
-                  : error.contains("402")
-                      ? "Проверьте баланс DeepSeek"
-                      : "Не удалось получить ответ. Проверьте сеть и попробуйте снова.";
-          showStatus(msg);
-          piper.say(msg, null);
+          reportError(
+              Failures.network(
+                  e, Failures.offline(this), "Помощник не смог ответить. Попробуйте ещё раз."));
         });
   }
 
@@ -753,20 +795,29 @@ public final class MainActivity extends Activity {
     }
   }
 
-  private void interpret(String text) {
+  void interpret(String text) {
     if (text.isEmpty()) {
       reply("Не расслышал. Повторите?");
       return;
     }
     remember("user", text);
     String normalized = text.toLowerCase(Locale.ROOT).replaceAll("[^а-яё0-9 ]", "").trim();
-    if (normalized.matches("пауза|стоп|отмена|закончить разговор")) {
+    if (normalized.matches("открой библиотеку|моя библиотека|недавно прослушанное")) {
+      openRecent();
+      return;
+    }
+    if (normalized.equals("пауза")) {
+      spokenPause();
+      return;
+    }
+    if (normalized.matches("стоп|отмена|закончить разговор")) {
       endDialog();
       showStatus("");
       return;
     }
-    if (!offers.isEmpty() && normalized.matches("да|да включи|включи|давай")) {
-      startBook(offers.get(offerIndex));
+    if (normalized.matches("включи|включи эту|включи эту книгу|играй")
+        || (!offers.isEmpty() && normalized.matches("да|да включи|давай"))) {
+      playSelection();
       return;
     }
     if (normalized.matches("продолжить|продолжай|читай дальше|верни мою книгу")) {
@@ -775,9 +826,12 @@ public final class MainActivity extends Activity {
     }
     int ticket = turn;
     List<JSONObject> messages = new ArrayList<>(conversation);
-    Book b = shelf.get(selected);
+    Book b = voiceBook();
     String context =
-        (b == null ? "" : b.label())
+        "Экран: "
+            + (showingRecent ? "библиотека" : "плеер")
+            + ". Выбрано: "
+            + (b == null ? "" : b.label())
             + (offers.isEmpty() ? "" : "; предложено: " + offers.get(offerIndex).label());
     showStatus("Думаю…");
     jobs.execute(
@@ -800,44 +854,166 @@ public final class MainActivity extends Activity {
     else reply("Какую книгу найдём?");
   }
 
-  private void act(JSONObject r) {
+  void act(JSONObject r) {
+    String query = r.optString("query").trim();
     switch (r.optString("action")) {
+      case "library":
+        openRecent();
+        break;
+      case "player":
+        Book visible = voiceBook();
+        if (visible != null && shelf.get(visible.id) != null) selected = visible.id;
+        clearOffers();
+        showPage(false);
+        reply(visible == null ? "Плеер открыт." : "Плеер. " + currentLabel());
+        break;
+      case "search_library":
+        localBooks(query, false);
+        break;
+      case "choose":
+        navigate(r.optInt("number", 0) - 1);
+        break;
+      case "info":
+        Book info = voiceBook();
+        if (info == null) reply("Книга пока не выбрана.");
+        else
+          reply(
+              info.label()
+                  + ". "
+                  + info.source
+                  + ". Глава "
+                  + (shelf.track(info.id) + 1)
+                  + ". Позиция в главе: "
+                  + shelf.position(info.id) / 60000
+                  + " мин.");
+        break;
+      case "settings":
+        settings();
+        piper.say("Настройки помощника.", null);
+        break;
+      case "import_files":
+        endDialog();
+        importFiles();
+        break;
       case "search":
-        String q = r.optString("query").trim();
-        if (q.isEmpty()) reply("Какого автора поищем?");
-        else search(q, true);
+        if (query.isEmpty()) reply("Какого автора поищем?");
+        else search(query, true);
         break;
       case "next":
-        if (offerIndex + 1 < offers.size()) {
-          offerIndex++;
-          offer();
-        } else reply("Это все найденные записи. Что ещё поищем?");
+      case "previous":
+        int step = r.optString("action").equals("next") ? 1 : -1;
+        if (offers.isEmpty() && !showingRecent) {
+          restoredLibraryId = selected;
+          showPage(true);
+        }
+        navigate((offers.isEmpty() ? libraryPager.getCurrentItem() : offerIndex) + step);
         break;
       case "play":
-        if (!offers.isEmpty()) startBook(offers.get(offerIndex));
-        else resumePrevious();
+        if (!query.isEmpty()) localBooks(query, true);
+        else playSelection();
         break;
       case "resume":
         resumePrevious();
         break;
       case "seek":
-        selected = previous;
-        move(Math.max(-86400, Math.min(86400, r.optInt("seconds", -10))));
-        resumePrevious();
+        if (voiceBook() == null || !r.has("seconds")) {
+          reply("Какую книгу и на сколько секунд перемотать?");
+          break;
+        }
+        Book seekBook = voiceBook();
+        if (shelf.get(seekBook.id) == null) shelf.put(seekBook, false);
+        selected = seekBook.id;
+        move(Math.max(-86400, Math.min(86400, r.optInt("seconds"))));
+        startBook(seekBook);
         break;
       case "timer":
-        if (service != null) {
-          service.setTimer(Math.max(1, Math.min(240, r.optInt("minutes", 30))));
-          resumePrevious();
+        if (service == null) reportError("Плеер ещё открывается. Попробуйте ещё раз.");
+        else if (!r.has("minutes") || r.optInt("minutes", -1) < 0)
+          reply("На сколько минут поставить таймер?");
+        else {
+          service.setTimer(Math.min(240, r.optInt("minutes")));
+          playSelection();
         }
         break;
-      case "end":
       case "pause":
+        spokenPause();
+        break;
+      case "end":
         endDialog();
         showStatus("");
         break;
-      default:
+      case "chat":
         reply(r.optString("text", "Какую книгу хотите послушать?"));
+        break;
+      default:
+        reply("Не понял команду. Скажите по-другому.");
+    }
+  }
+
+  private void spokenPause() {
+    if (active()) service.pause();
+    endDialog();
+    showStatus("Пауза");
+    piper.say("Пауза", null);
+  }
+
+  private Book voiceBook() {
+    if (offeredBook != null) return offeredBook;
+    return showingRecent ? libraryBook() : shelf.get(selected);
+  }
+
+  private String currentLabel() {
+    Book b = voiceBook();
+    return b == null ? "Книг пока нет." : b.label();
+  }
+
+  private void playSelection() {
+    Book b = voiceBook();
+    if (b == null) reply("Какую книгу включить?");
+    else startBook(b);
+  }
+
+  private void clearOffers() {
+    cancelSelection();
+    offers = Collections.emptyList();
+    offeredBook = null;
+  }
+
+  private void openRecent() {
+    clearOffers();
+    if (active()) service.pause();
+    showPage(true);
+    reply("Библиотека. " + currentLabel());
+  }
+
+  private void navigate(int index) {
+    int count = offers.isEmpty() ? showingRecent ? carousel.getItemCount() : 0 : offers.size();
+    if (index < 0 || index >= count) {
+      reply(
+          count == 0
+              ? "Сначала откройте библиотеку или найдите книгу."
+              : "Такой карточки нет. Всего книг: " + count + ".");
+    } else if (!offers.isEmpty()) {
+      offerIndex = index;
+      offer();
+    } else {
+      libraryPager.setCurrentItem(index, false);
+      reply((index + 1) + " из " + count + ". " + currentLabel());
+    }
+  }
+
+  private void localBooks(String query, boolean play) {
+    clearOffers();
+    List<Book> matches = query.isEmpty() ? shelf.all() : shelf.search(query);
+    if (matches.isEmpty()) {
+      if (play && !query.isEmpty()) search(query, true);
+      else reply("В вашей библиотеке ничего не нашлось. Поищем в каталогах?");
+    } else if (play && matches.size() == 1) {
+      startBook(matches.get(0));
+    } else {
+      offers = matches;
+      offerIndex = 0;
+      offer();
     }
   }
 
@@ -861,7 +1037,11 @@ public final class MainActivity extends Activity {
                 Intent.EXTRA_MIME_TYPES,
                 new String[] {"audio/*", "application/mp4", "application/octet-stream"})
             .putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true);
-    startActivityForResult(i, 17);
+    try {
+      startActivityForResult(i, 17);
+    } catch (ActivityNotFoundException e) {
+      reportError("Не удалось открыть выбор файлов.");
+    }
   }
 
   @Override
@@ -926,7 +1106,7 @@ public final class MainActivity extends Activity {
               })
           .show();
     } catch (Exception e) {
-      showStatus("Не удалось сохранить доступ к файлу");
+      reportError("Не удалось сохранить доступ к файлу");
     }
   }
 
