@@ -1,0 +1,24 @@
+Книга вслух — сторонние компоненты
+
+sherpa-onnx v1.12.20, Apache License 2.0
+https://github.com/k2-fsa/sherpa-onnx/tree/v1.12.20
+https://github.com/k2-fsa/sherpa-onnx/blob/v1.12.20/LICENSE
+
+ONNX Runtime, MIT License
+https://github.com/microsoft/onnxruntime
+https://github.com/microsoft/onnxruntime/blob/main/LICENSE
+
+eSpeak NG (движок и фонетические данные), GNU GPL v3 or later
+https://github.com/espeak-ng/espeak-ng
+https://github.com/espeak-ng/espeak-ng/blob/master/COPYING
+
+Piper, голос ru_RU-dmitri-medium
+https://github.com/k2-fsa/sherpa-onnx/releases/tag/tts-models
+Карточка модели — assets/piper/MODEL_CARD. В карточке указана лицензия CC0 для набора данных.
+https://github.com/NabuCasa/voice-datasets
+
+Kotlin Standard Library, Apache License 2.0
+https://github.com/JetBrains/kotlin/tree/v2.1.21
+
+Для записей каталогов авторство и лицензия приводятся на странице источника.
+Сведения о текущей записи доступны через меню «Библиотека → Об этой записи».

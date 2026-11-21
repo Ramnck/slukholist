@@ -1,0 +1,12 @@
+.gradle/
+.idea/
+**/build/
+local.properties
+*.iml
+*.jks
+*.keystore
+.env
+.DS_Store
+app/libs/
+app/src/main/assets/piper/
+dist/
