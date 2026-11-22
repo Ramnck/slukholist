@@ -16,6 +16,7 @@ import androidx.viewpager2.widget.ViewPager2;
 import java.io.*;
 import java.util.*;
 import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicBoolean;
 import org.json.*;
 
 public final class MainActivity extends Activity {
@@ -26,6 +27,7 @@ public final class MainActivity extends Activity {
   private int offerIndex;
   private Book offeredBook;
   private volatile int turn;
+  private AtomicBoolean finishRecording;
   private int selectionTask;
   private String selected = "", previous = "", status = "", seenError = "";
   private boolean dialogMode, bound, destroyed, pendingPlay;
@@ -153,7 +155,9 @@ public final class MainActivity extends Activity {
             "Сказать",
             0xff6b34df,
             () -> {
-              if (dialogMode) {
+              if (finishRecording != null) {
+                finishRecording.set(true);
+              } else if (dialogMode) {
                 endDialog();
                 showStatus("");
               } else voice();
@@ -312,6 +316,7 @@ public final class MainActivity extends Activity {
           openingGesture = true;
           boolean talking = dialogMode;
           turn++;
+          finishRecording = null;
           clearOffers();
           piper.stop();
           if (active()) service.pause();
@@ -389,8 +394,11 @@ public final class MainActivity extends Activity {
     title.setText(b == null ? "Выберите книгу" : b.title);
     boolean current = active() && service.current().equals(selected);
     if (showingRecent) updateLibraryPosition();
-    mic.setText(dialogMode ? "Завершить" : "Сказать");
-    mic.setContentDescription(dialogMode ? "Завершить разговор" : "Сказать");
+    String micLabel =
+        finishRecording != null ? "Завершить запись" : dialogMode ? "Завершить" : "Сказать";
+    mic.setText(micLabel);
+    mic.setContentDescription(
+        dialogMode && finishRecording == null ? "Завершить разговор" : micLabel);
     play.setImageResource(current ? R.drawable.control_pause : R.drawable.control_play);
     play.setContentDescription(current ? "Пауза" : "Воспроизвести");
     play.setEnabled(b != null && !pendingPlay);
@@ -464,6 +472,7 @@ public final class MainActivity extends Activity {
   private void endDialog() {
     turn++;
     dialogMode = false;
+    finishRecording = null;
     piper.stop();
     offers = Collections.emptyList();
     offeredBook = null;
@@ -758,18 +767,21 @@ public final class MainActivity extends Activity {
   }
 
   private void listen() {
-    stage("Слушаю", this::recordUtterance);
+    AtomicBoolean finished = new AtomicBoolean();
+    finishRecording = finished;
+    stage("Слушаю", () -> recordUtterance(finished));
   }
 
-  private void recordUtterance() {
+  private void recordUtterance(AtomicBoolean finished) {
     int ticket = turn;
     Vibrator v = getSystemService(Vibrator.class);
-    if (v != null) v.vibrate(VibrationEffect.createOneShot(65, VibrationEffect.DEFAULT_AMPLITUDE));
+    if (v != null && !finished.get())
+      v.vibrate(VibrationEffect.createOneShot(65, VibrationEffect.DEFAULT_AMPLITUDE));
     jobs.execute(
         () -> {
           byte[] wav;
           try {
-            wav = voiceInput.listen(this, () -> ticket == turn);
+            wav = voiceInput.listen(this, () -> ticket == turn, finished::get);
           } catch (Exception e) {
             main.post(
                 () -> {
@@ -780,7 +792,10 @@ public final class MainActivity extends Activity {
           main.post(
               () -> {
                 if (ticket != turn) return;
-                if (wav == null) reportError("Я вас не услышал. Нажмите «Сказать» и повторите.");
+                finishRecording = null;
+                if (wav == null && finished.get()) reply("Не расслышал. Повторите?");
+                else if (wav == null)
+                  reportError("Я вас не услышал. Нажмите «Сказать» и повторите.");
                 else stage("Принято", () -> transcribe(ticket, wav));
               });
         });

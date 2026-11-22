@@ -65,8 +65,26 @@ public class CatalogTest {
                           & WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
                       != 0);
               a.voiceInput =
-                  (context, active) -> {
+                  (context, active, finished) -> {
                     int index = count.getAndIncrement();
+                    if (index == 0) {
+                      InstrumentationRegistry.getInstrumentation()
+                          .runOnMainSync(
+                              () -> {
+                                ArrayList<View> finish = new ArrayList<>();
+                                a.getWindow()
+                                    .getDecorView()
+                                    .findViewsWithText(
+                                        finish,
+                                        "Завершить запись",
+                                        View.FIND_VIEWS_WITH_CONTENT_DESCRIPTION);
+                                assertTrue(finish.get(0).performClick());
+                                assertTrue(finish.get(0).performClick());
+                              });
+                      assertTrue(
+                          "Button should finish microphone capture", finished.getAsBoolean());
+                      assertTrue("Assistant should still be active", active.getAsBoolean());
+                    }
                     return index < phrases.length ? phrases[index] : null;
                   };
               ArrayList<View> buttons = new ArrayList<>();

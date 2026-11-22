@@ -20,6 +20,29 @@ import org.junit.runner.RunWith;
 @RunWith(AndroidJUnit4.class)
 public class VoiceTest {
   @Test
+  public void finishingRecordingPreservesTheCapturedSamples() throws Exception {
+    AtomicBoolean finish = new AtomicBoolean();
+    Microphone.PcmInput source =
+        block -> {
+          block[0] = 37;
+          block[1] = -68;
+          finish.set(true);
+          return 2;
+        };
+    byte[] wav = Microphone.capture(16000, source, () -> true, finish::get);
+    assertNotNull(wav);
+    assertEquals(48, wav.length);
+    java.nio.ByteBuffer bytes =
+        java.nio.ByteBuffer.wrap(wav).order(java.nio.ByteOrder.LITTLE_ENDIAN);
+    assertEquals(4, bytes.getInt(40));
+    assertEquals(37, bytes.getShort(44));
+    assertEquals(-68, bytes.getShort(46));
+    assertNull(Microphone.capture(16000, source, () -> true, finish::get));
+    finish.set(false);
+    assertNull(Microphone.capture(16000, source, () -> !finish.get(), () -> false));
+  }
+
+  @Test
   public void lastTenMessagesAndReadingPreferencesSurviveRelaunch() throws Exception {
     var prefs =
         InstrumentationRegistry.getInstrumentation()

@@ -8,10 +8,13 @@ import java.util.function.BooleanSupplier;
 
 final class Microphone {
   interface Input {
-    byte[] listen(android.content.Context context, BooleanSupplier active) throws Exception;
+    byte[] listen(android.content.Context context, BooleanSupplier active, BooleanSupplier finished)
+        throws Exception;
   }
 
-  static byte[] listen(android.content.Context context, BooleanSupplier active) throws Exception {
+  static byte[] listen(
+      android.content.Context context, BooleanSupplier active, BooleanSupplier finished)
+      throws Exception {
     if (context.checkSelfPermission(android.Manifest.permission.RECORD_AUDIO)
         != android.content.pm.PackageManager.PERMISSION_GRANTED)
       throw new IOException("Микрофон недоступен");
@@ -28,29 +31,40 @@ final class Microphone {
             AudioFormat.CHANNEL_IN_MONO,
             AudioFormat.ENCODING_PCM_16BIT,
             size);
-    ByteArrayOutputStream pcm = new ByteArrayOutputStream();
     try {
       recorder.startRecording();
-      long start = SystemClock.elapsedRealtime(), lastSound = 0;
-      short[] block = new short[640];
-      while (active.getAsBoolean()) {
-        int n = recorder.read(block, 0, block.length);
-        if (n <= 0) throw new IOException("Микрофон недоступен");
-        double energy = 0;
-        for (int i = 0; i < n; i++) {
-          energy += (double) block[i] * block[i];
-          pcm.write(block[i] & 255);
-          pcm.write((block[i] >> 8) & 255);
-        }
-        long now = SystemClock.elapsedRealtime();
-        if (Math.sqrt(energy / n) > 190) lastSound = now;
-        if (lastSound == 0 && now - start > 7000) return null;
-        if ((lastSound != 0 && now - lastSound > 1450) || now - start > 45000) break;
-      }
+      return capture(rate, block -> recorder.read(block, 0, block.length), active, finished);
     } finally {
       recorder.release();
     }
-    if (!active.getAsBoolean()) return null;
+  }
+
+  interface PcmInput {
+    int read(short[] block);
+  }
+
+  static byte[] capture(int rate, PcmInput input, BooleanSupplier active, BooleanSupplier finished)
+      throws IOException {
+    ByteArrayOutputStream pcm = new ByteArrayOutputStream();
+    long start = SystemClock.elapsedRealtime(), lastSound = 0;
+    boolean hasSignal = false;
+    short[] block = new short[640];
+    while (active.getAsBoolean() && !finished.getAsBoolean()) {
+      int n = input.read(block);
+      if (n <= 0) throw new IOException("Микрофон недоступен");
+      double energy = 0;
+      for (int i = 0; i < n; i++) {
+        energy += (double) block[i] * block[i];
+        pcm.write(block[i] & 255);
+        pcm.write((block[i] >> 8) & 255);
+      }
+      if (energy > 0) hasSignal = true;
+      long now = SystemClock.elapsedRealtime();
+      if (Math.sqrt(energy / n) > 190) lastSound = now;
+      if (lastSound == 0 && now - start > 7000) return null;
+      if ((lastSound != 0 && now - lastSound > 1450) || now - start > 45000) break;
+    }
+    if (!active.getAsBoolean() || !hasSignal) return null;
     byte[] samples = pcm.toByteArray();
     ByteBuffer b = ByteBuffer.allocate(samples.length + 44).order(ByteOrder.LITTLE_ENDIAN);
     b.putInt(0x46464952)
