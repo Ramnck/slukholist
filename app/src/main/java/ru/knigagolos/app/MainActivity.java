@@ -674,7 +674,7 @@ public final class MainActivity extends Activity {
     key.setHint("API-ключ DeepSeek");
     key.setInputType(129);
     new AlertDialog.Builder(this)
-        .setTitle("Настройки DeepSeek")
+        .setTitle("Слухолист · версия " + BuildConfig.VERSION_NAME)
         .setMessage("Реплики отправляются в DeepSeek. Голос Piper работает на телефоне.")
         .setView(key)
         .setPositiveButton(
